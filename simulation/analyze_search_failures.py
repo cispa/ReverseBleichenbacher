@@ -15,6 +15,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
+if str(HERE.parent) not in sys.path:
+    sys.path.insert(0, str(HERE.parent))
 
 from analysis import (
     SEARCH_COVERAGE_EXHAUSTED,
@@ -24,7 +26,7 @@ from analysis import (
 )
 from key_policy import load_keys
 from oracle import CountingOracle
-from proof import ProofAttack
+from reversebleichenbacher import ProofAttack
 from trials import MESSAGE_GENERATOR, make_trial
 from validate_run import read_results, validate_run
 

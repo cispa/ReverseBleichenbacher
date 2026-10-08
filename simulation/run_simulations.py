@@ -19,11 +19,13 @@ HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from adapters import IMPLEMENTATIONS
 from key_policy import KEY_POLICY, key_file, load_keys
-from proof.bottom_up import BOTTOM_UP_STRATEGIES, DEFAULT_BOTTOM_UP_STRATEGY
-from proof.search import DEFAULT_SEARCH_STRATEGY, SEARCH_STRATEGIES
+from reversebleichenbacher.bottom_up import BOTTOM_UP_STRATEGIES, DEFAULT_BOTTOM_UP_STRATEGY
+from reversebleichenbacher.search import DEFAULT_SEARCH_STRATEGY, SEARCH_STRATEGIES
 from validate_run import validate_grid, validate_run
 
 

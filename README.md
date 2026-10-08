@@ -9,7 +9,8 @@ the TLS lab runs with Docker on macOS or Linux.
 
 | Directory | What is inside |
 | --- | --- |
-| [`simulation/`](simulation/) | The attack, the Capol baseline, simulated oracles, RSA key pools, and scripts for running and analyzing the query experiments. |
+| [`reversebleichenbacher/`](reversebleichenbacher/) | The reusable attack package used by the simulations. |
+| [`simulation/`](simulation/) | The Capol baseline, simulated oracles, RSA key pools, and scripts for running and analyzing the query experiments. |
 | [`latency/`](latency/) | The TLS attack, Docker lab, network-delay runner, and scripts for the Figure 5 latency experiment. |
 
 Each setup can be run on its own. See the README in each directory for the full

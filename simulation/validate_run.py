@@ -8,9 +8,14 @@ import csv
 import hashlib
 import json
 import math
+import sys
 from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from schema import OUTCOMES, QUERY_COLUMNS, RESULT_COLUMNS, SCHEMA_VERSION, STEPS
 from reporting import reported_outcome

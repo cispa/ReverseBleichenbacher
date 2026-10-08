@@ -6,12 +6,16 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sys
 from collections import Counter
 from pathlib import Path
 
+HERE = Path(__file__).resolve().parent
+if str(HERE.parent) not in sys.path:
+    sys.path.insert(0, str(HERE.parent))
 
 from analysis import failure_aware_median, load_results, upper_median
-from proof.search import (
+from reversebleichenbacher.search import (
     HALVING_FULL_GRID,
     HALVING_SPARSE_ASYMMETRIC,
     HALVING_SPARSE_GRID,

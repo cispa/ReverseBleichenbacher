@@ -203,7 +203,7 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(config_2048["search_slack"], 4)
 
     def test_proof_attack_api_has_no_plaintext(self):
-        from proof import ProofAttack
+        from reversebleichenbacher import ProofAttack
 
         self.assertEqual(
             tuple(inspect.signature(ProofAttack.attack).parameters),
@@ -565,6 +565,9 @@ class ResumeTests(unittest.TestCase):
             copied_script = original / "simulation"
             copied_keys = original / "simulation" / "keys"
             shutil.copytree(HERE, copied_script,
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            shutil.copytree(REPO_ROOT / "reversebleichenbacher",
+                            original / "reversebleichenbacher",
                             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
             grid_relative = Path("simulation/results/moved")
             subprocess.run(

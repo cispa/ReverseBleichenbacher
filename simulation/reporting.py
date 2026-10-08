@@ -9,8 +9,8 @@ from __future__ import annotations
 import math
 from functools import lru_cache
 
-from proof.core import ceil_div
-from proof.primes import TRIMMER_PRIMES
+from reversebleichenbacher.core import ceil_div
+from reversebleichenbacher.primes import TRIMMER_PRIMES
 
 
 def _multipliers(t: int, slack: int):

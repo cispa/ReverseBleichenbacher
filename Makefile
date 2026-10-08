@@ -57,7 +57,7 @@ simulations-check:
 
 simulation-tests:
 	@PYTHONPATH=simulation $(PYTHON_BIN) -m unittest -q \
-		simulation.proof.test_algorithms \
+		reversebleichenbacher.test_algorithms \
 		simulation.test_simulation_pipeline \
 		simulation.test_compare_proof_strategies
 

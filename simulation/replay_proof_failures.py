@@ -20,11 +20,13 @@ HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from key_policy import load_keys
 from oracle import CountingOracle
-from proof import ProofAttack
-from proof.search import SEARCH_STRATEGIES
+from reversebleichenbacher import ProofAttack
+from reversebleichenbacher.search import SEARCH_STRATEGIES
 from reporting import reported_outcome, trimmer_missed_power_of_two
 from trials import generate_message, make_trial
 

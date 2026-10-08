@@ -13,14 +13,19 @@ import argparse
 import csv
 import hashlib
 import json
+import sys
 from collections import Counter
 from pathlib import Path
 
+HERE = Path(__file__).resolve().parent
+if str(HERE.parent) not in sys.path:
+    sys.path.insert(0, str(HERE.parent))
+
 from key_policy import load_keys
 from oracle import CountingOracle
-from proof import ProofAttack
-from proof import attack as attack_module
-from proof.bottom_up import BottomUpFailure, BottomUpRecovery
+from reversebleichenbacher import ProofAttack
+from reversebleichenbacher import attack as attack_module
+from reversebleichenbacher.bottom_up import BottomUpFailure, BottomUpRecovery
 from trials import MESSAGE_GENERATOR, make_trial
 from validate_run import validate_run
 

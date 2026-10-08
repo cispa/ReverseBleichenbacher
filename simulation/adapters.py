@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from oracle import CountingOracle
 from analysis import SEARCH_COVERAGE_EXHAUSTED, SEARCH_FALSE_NEGATIVE_EXHAUSTED
-from proof.bottom_up import DEFAULT_BOTTOM_UP_STRATEGY
-from proof.search import DEFAULT_SEARCH_STRATEGY
+from reversebleichenbacher.bottom_up import DEFAULT_BOTTOM_UP_STRATEGY
+from reversebleichenbacher.search import DEFAULT_SEARCH_STRATEGY
 from reporting import reported_outcome, trimmer_outcome, trimmer_report
 from trials import Trial
 
@@ -22,7 +22,7 @@ def _proof(
     bottom_up_strategy: str = DEFAULT_BOTTOM_UP_STRATEGY,
     bottom_up_r_limit: int = 2048,
 ):
-    from proof import ProofAttack
+    from reversebleichenbacher import ProofAttack
 
     attack = ProofAttack(
         search_strategy=search_strategy,

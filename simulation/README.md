@@ -1,7 +1,8 @@
 # Simulation experiments
 
-This directory contains the large-scale query experiments. `proof/` implements
-our attack, and `capol_baseline/` contains the comparison attack. The harness
+This directory contains the large-scale query experiments. The shared
+`reversebleichenbacher/` package at the repository root implements our attack,
+and `capol_baseline/` contains the comparison attack. The harness
 runs both against simulated TTT, TFT, and FFT oracles at 1024 and 2048 bits.
 It uses the same seed, message, and selected key for each paired trial.
 

@@ -1,9 +1,14 @@
 """Run against either artifact copy by setting PYTHONPATH to its attacker dir."""
 
 import logging
+import sys
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+# Until the TLS adapter uses the shared package, exercise its own attack copy.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "attacker"))
 
 from reversebleichenbacher import bottom_up, search, utils
 

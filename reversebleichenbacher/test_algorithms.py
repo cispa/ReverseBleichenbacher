@@ -125,7 +125,7 @@ class PowerOfTwoTests(unittest.TestCase):
             modulus=101,
             B=5,
             config=AttackConfig("FFT", 2048, t_slack=1, bs_slack=3),
-            oracle=oracle,
+            oracle=SequentialExecutor(oracle),
         )
         self.assertFalse(trimmer.check_t(10, slack=1))
         self.assertEqual(len(multipliers), 2)
@@ -299,11 +299,11 @@ class SearchingTests(unittest.TestCase):
 
         with self.assertRaises(SearchFailure):
             run_search(
-                accepts, HALVING_SPARSE_ASYMMETRIC, modulus, B, tau,
+                SequentialExecutor(accepts), HALVING_SPARSE_ASYMMETRIC, modulus, B, tau,
                 low, high, slack=0, complete_sparse=False,
             )
         retry, retry_calls = run_search(
-            accepts, HALVING_SPARSE_ASYMMETRIC, modulus, B, tau,
+            SequentialExecutor(accepts), HALVING_SPARSE_ASYMMETRIC, modulus, B, tau,
             low, high, slack=1, complete_sparse=False,
         )
         self.assertEqual(retry.offset, -1)
@@ -315,7 +315,7 @@ class SearchingTests(unittest.TestCase):
             return accepts(multiplier)
 
         fallback, calls = run_search(
-            recorded, HALVING_SPARSE_ASYMMETRIC, modulus, B, tau,
+            SequentialExecutor(recorded), HALVING_SPARSE_ASYMMETRIC, modulus, B, tau,
             low, high, slack=0, complete_sparse=True,
         )
         self.assertTrue(fallback.reduced_low <= reduced <= fallback.reduced_high)
@@ -439,7 +439,7 @@ class BottomUpTests(unittest.TestCase):
             start_bits=3,
             full_setting_limit=3,
         )
-        result, calls = recovery.recover(oracle, target_bits=4)
+        result, calls = recovery.recover(SequentialExecutor(oracle), target_bits=4)
         self.assertEqual(result, (tau * reduced) % 16)
         self.assertGreaterEqual(calls, 2)
 
@@ -462,7 +462,7 @@ class BottomUpTests(unittest.TestCase):
             full_setting_limit=7,
         )
         with self.assertRaises(BottomUpFailure):
-            proved.recover(oracle, target_bits=4)
+            proved.recover(SequentialExecutor(oracle), target_bits=4)
 
         best_effort = BottomUpRecovery(
             modulus=modulus,
@@ -475,7 +475,7 @@ class BottomUpTests(unittest.TestCase):
             r_limit=32,
             full_setting_limit=7,
         )
-        result, calls = best_effort.recover(oracle, target_bits=4)
+        result, calls = best_effort.recover(SequentialExecutor(oracle), target_bits=4)
         self.assertEqual(result, (tau * reduced) % 16)
         self.assertGreater(calls, 0)
         self.assertLessEqual(best_effort.low, reduced)
@@ -517,7 +517,7 @@ class BottomUpTests(unittest.TestCase):
             ),
         ):
             result = recovery._recover_round(
-                lambda _multiplier: True, 4, (1, 3)
+                SequentialExecutor(lambda _multiplier: True), 4, (1, 3)
             )
 
         self.assertEqual(result, 1)

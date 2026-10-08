@@ -1,6 +1,6 @@
 """Self-contained implementation of the attack described in the paper.
 
-The attack boundary receives only the public modulus and an oracle. The target
+The attack boundary receives only the public modulus and a query executor. The target
 plaintext is deliberately unavailable here; it is used only by the simulation
 adapter after the attack has finished, for correctness and failure reporting.
 """
@@ -26,7 +26,7 @@ from .core import (
     PKCS1Bounds,
     ceil_div,
 )
-from .executor import as_executor
+from .executor import QueryExecutor
 from .search import (
     DEFAULT_SEARCH_STRATEGY,
     HALVING_SPARSE_ASYMMETRIC,
@@ -37,10 +37,8 @@ from .search import (
 from .trimmer import Trimmer, extend_power_of_two, power_two_slack
 
 
-def _phase(oracle, name: str) -> None:
-    setter = getattr(oracle, "set_phase", None)
-    if setter is not None:
-        setter(name)
+def _phase(executor: QueryExecutor, name: str) -> None:
+    executor.set_phase(name)
 
 
 class ProofAttack:
@@ -184,12 +182,12 @@ class ProofAttack:
             "bottom_up_query_order": self.bottom_up_query_order,
         }
 
-    def trimming_step(self, oracle) -> tuple[int, int]:
+    def trimming_step(self, executor: QueryExecutor) -> tuple[int, int]:
         trimmer = Trimmer(
             modulus=self._state.n,
             B=self._state.B,
             config=self._config,
-            oracle=oracle,
+            oracle=executor,
         )
         tau, calls = trimmer.generate_and_test()
         tau, extra_calls = extend_power_of_two(
@@ -212,12 +210,12 @@ class ProofAttack:
         ) / self._state.interval_size
         return tau, calls
 
-    def _execute_search(self, oracle, tau: int) -> int:
+    def _execute_search(self, executor: QueryExecutor, tau: int) -> int:
         reduced_low = ceil_div(self._state.a, tau)
         reduced_high = self._state.b // tau
         try:
             candidate, calls = run_search(
-                oracle,
+                executor,
                 self.search_strategy,
                 self._state.n,
                 self._state.B,
@@ -235,8 +233,7 @@ class ProofAttack:
         )
         return calls
 
-    def attack(self, oracle, modulus: int):
-        executor = as_executor(oracle)
+    def attack(self, executor: QueryExecutor, modulus: int):
         key_bytes = self._config.keylength // 8
         B = PKCS1Bounds.compute_B(key_bytes)
         lower, upper = PKCS1Bounds.initial_interval(B)

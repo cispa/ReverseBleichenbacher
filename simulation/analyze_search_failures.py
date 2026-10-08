@@ -26,7 +26,7 @@ from analysis import (
 )
 from key_policy import load_keys
 from oracle import CountingOracle
-from reversebleichenbacher import ProofAttack
+from reversebleichenbacher import ProofAttack, SequentialExecutor
 from trials import MESSAGE_GENERATOR, make_trial
 from validate_run import read_results, validate_run
 
@@ -140,7 +140,7 @@ def main() -> None:
             trial.plaintext, trial.key.n, bits, oracle_type
         )
         try:
-            attack.attack(oracle, trial.key.n)
+            attack.attack(SequentialExecutor(oracle), trial.key.n)
         except Exception:
             pass
         else:

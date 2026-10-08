@@ -88,14 +88,6 @@ class SequentialExecutor:
             yield QueryResult(candidate, self.query(candidate.multiplier))
 
 
-def as_executor(oracle: Callable[[int], bool] | QueryExecutor) -> QueryExecutor:
-    if isinstance(oracle, QueryExecutor):
-        return oracle
-    if not callable(oracle):
-        raise TypeError("oracle must be callable or implement QueryExecutor")
-    return SequentialExecutor(oracle)
-
-
 def execute_candidates(
     executor: QueryExecutor, candidates: Iterable[CandidateT]
 ) -> Iterator[QueryResult[CandidateT]]:

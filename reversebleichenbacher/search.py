@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Iterator
+from typing import Iterator
 
 from .core import ceil_div
-from .executor import QueryExecutor, as_executor, execute_candidates
+from .executor import QueryExecutor, execute_candidates
 
 
 STANDARD_COVERAGE = "standard_coverage"
@@ -262,7 +262,7 @@ def search_candidates(
 
 
 def run_search(
-    oracle: Callable[[int], bool] | QueryExecutor,
+    executor: QueryExecutor,
     strategy: str,
     modulus: int,
     B: int,
@@ -274,7 +274,6 @@ def run_search(
     complete_sparse: bool = False,
 ) -> tuple[SearchCandidate, int]:
     strategy = normalize_search_strategy(strategy)
-    executor = as_executor(oracle)
     started_at = executor.submitted_queries
     queried: set[int] = set()
     for reply in execute_candidates(

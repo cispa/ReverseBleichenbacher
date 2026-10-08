@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Iterator, Sequence
+from typing import Iterator, Sequence
 
 from .core import ceil_div
-from .executor import QueryExecutor, as_executor, execute_candidates
+from .executor import QueryExecutor, execute_candidates
 
 
 PROVED = "proved"
@@ -421,9 +421,8 @@ class BottomUpRecovery:
         return (-symbolic * self._inverse_tau) % self.modulus
 
     def _recover_round(
-        self, oracle: Callable[[int], bool] | QueryExecutor, D: int, guesses: Sequence[int]
+        self, executor: QueryExecutor, D: int, guesses: Sequence[int]
     ) -> int:
-        executor = as_executor(oracle)
         observed_queries = executor.submitted_queries
 
         def record_submissions() -> None:
@@ -542,7 +541,7 @@ class BottomUpRecovery:
         )
 
     def recover(
-        self, oracle: Callable[[int], bool], target_bits: int
+        self, executor: QueryExecutor, target_bits: int
     ) -> tuple[int, int]:
         if self.low == self.high:
             return (self.low * self.tau) % (1 << target_bits), 0
@@ -550,14 +549,14 @@ class BottomUpRecovery:
         first_bits = min(self.start_bits, target_bits)
         D = 1 << first_bits
         guesses = tuple(range(1, D, 2))
-        known = self._recover_round(oracle, D, guesses)
+        known = self._recover_round(executor, D, guesses)
         known_bits = first_bits
 
         while known_bits < target_bits:
             previous_D = 1 << known_bits
             D = previous_D << 1
             known = self._recover_round(
-                oracle, D, (known, known + previous_D)
+                executor, D, (known, known + previous_D)
             )
             known_bits += 1
 

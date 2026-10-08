@@ -23,7 +23,7 @@ if str(HERE.parent) not in sys.path:
 
 from key_policy import load_keys
 from oracle import CountingOracle
-from reversebleichenbacher import ProofAttack
+from reversebleichenbacher import ProofAttack, SequentialExecutor
 from reversebleichenbacher import attack as attack_module
 from reversebleichenbacher.bottom_up import BottomUpFailure, BottomUpRecovery
 from trials import MESSAGE_GENERATOR, make_trial
@@ -52,11 +52,18 @@ class TranscriptOracle(CountingOracle):
         return answer
 
 
+class TranscriptExecutor(SequentialExecutor):
+    def __init__(self, oracle: TranscriptOracle):
+        super().__init__(oracle)
+        self.transcript = oracle
+
+
 class TracedBottomUpRecovery(BottomUpRecovery):
-    def _recover_round(self, oracle: TranscriptOracle, D: int, guesses):
+    def _recover_round(self, executor: TranscriptExecutor, D: int, guesses):
+        oracle = executor.transcript
         start = len(oracle.bottom_up_queries)
         try:
-            return super()._recover_round(oracle, D, guesses)
+            return super()._recover_round(executor, D, guesses)
         except BottomUpFailure:
             oracle.failed_round_start = start
             oracle.failed_round_D = D
@@ -100,7 +107,7 @@ def replay_cell(cell: Path, keys_dir: Path) -> list[dict[str, object]]:
         attack.init_process(**attack.init_optimized(oracle_type, bits))
         oracle = TranscriptOracle(trial.plaintext, trial.key.n, bits, oracle_type)
         try:
-            attack.attack(oracle, trial.key.n)
+            attack.attack(TranscriptExecutor(oracle), trial.key.n)
         except Exception as error:
             if (
                 getattr(error, "error_type", type(error).__name__)

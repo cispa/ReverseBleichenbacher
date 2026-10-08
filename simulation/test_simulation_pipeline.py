@@ -207,10 +207,10 @@ class BoundaryTests(unittest.TestCase):
 
         self.assertEqual(
             tuple(inspect.signature(ProofAttack.attack).parameters),
-            ("self", "oracle", "modulus"),
+            ("self", "executor", "modulus"),
         )
 
-    def test_explicit_sequential_executor_matches_callable_oracle(self):
+    def test_sequential_executor_preserves_query_accounting(self):
         from reversebleichenbacher import SequentialExecutor
 
         trial = make_trial(load_keys(REAL_KEYS, 1024), 20261006, 1024, 0)
@@ -220,7 +220,9 @@ class BoundaryTests(unittest.TestCase):
         wrapped_oracle = CountingOracle(trial.plaintext, trial.key.n, 1024, "TTT")
         executor = SequentialExecutor(wrapped_oracle)
 
-        direct_result, direct_stats = direct_attack.attack(direct_oracle, trial.key.n)
+        direct_result, direct_stats = direct_attack.attack(
+            SequentialExecutor(direct_oracle), trial.key.n
+        )
         wrapped_result, wrapped_stats = wrapped_attack.attack(executor, trial.key.n)
 
         self.assertEqual(wrapped_result, direct_result)
@@ -228,7 +230,9 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(wrapped_oracle.counts, direct_oracle.counts)
         self.assertEqual(executor.submitted_queries, wrapped_oracle.total)
 
-    def test_adapter_passes_only_oracle_and_modulus(self):
+    def test_adapter_passes_only_executor_and_modulus(self):
+        from reversebleichenbacher import SequentialExecutor
+
         calls = []
 
         class FakeAttack:
@@ -252,7 +256,7 @@ class BoundaryTests(unittest.TestCase):
             row = adapters.run_trial("proof", trial, "TTT", 1024)
         self.assertEqual(len(calls), 1)
         self.assertEqual(len(calls[0]), 2)
-        self.assertIsInstance(calls[0][0], CountingOracle)
+        self.assertIsInstance(calls[0][0], SequentialExecutor)
         self.assertEqual(calls[0][1], key.n)
         self.assertEqual(row["outcome"], "wrong_result")
 
@@ -262,7 +266,7 @@ class BoundaryTests(unittest.TestCase):
 
             def attack(self, oracle, modulus):
                 oracle.set_phase("search")
-                oracle(1)
+                oracle.query(1)
                 return 0, None
 
         key = KeyRecord(2, 0, (1 << 1023) + 643, 65537, 1)
@@ -288,7 +292,7 @@ class BoundaryTests(unittest.TestCase):
 
             def attack(self, oracle, modulus):
                 oracle.set_phase("trimmer")
-                oracle(1)
+                oracle.query(1)
                 raise BleichenBacherException("no trimmer")
 
         key = KeyRecord(2, 0, (1 << 1023) + 643, 65537, 1)
@@ -316,7 +320,7 @@ class BoundaryTests(unittest.TestCase):
 
             def attack(self, oracle, modulus):
                 oracle.set_phase("bottom_up")
-                oracle(1)
+                oracle.query(1)
                 error = BleichenBacherException("partial coverage exhausted")
                 error.error_type = "BottomUpCoverageExhausted"
                 raise error
@@ -350,7 +354,7 @@ class BoundaryTests(unittest.TestCase):
 
             def attack(self, oracle, modulus):
                 oracle.set_phase("search")
-                oracle(1)
+                oracle.query(1)
                 raise BleichenBacherException("search exhausted")
 
         key = KeyRecord(2, 0, (1 << 1023) + 643, 65537, 1)
@@ -384,7 +388,7 @@ class BoundaryTests(unittest.TestCase):
 
             def attack(self, oracle, modulus):
                 oracle.set_phase("search")
-                oracle(self.multiplier)
+                oracle.query(self.multiplier)
                 raise BleichenBacherException("search exhausted")
 
         key = KeyRecord(2, 0, (1 << 1023) + 643, 65537, 1)

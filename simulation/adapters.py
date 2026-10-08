@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from oracle import CountingOracle
+from reversebleichenbacher import SequentialExecutor
 from analysis import SEARCH_COVERAGE_EXHAUSTED, SEARCH_FALSE_NEGATIVE_EXHAUSTED
 from reversebleichenbacher.bottom_up import DEFAULT_BOTTOM_UP_STRATEGY
 from reversebleichenbacher.search import DEFAULT_SEARCH_STRATEGY
@@ -126,7 +127,8 @@ def run_trial(
     error_message = ""
 
     try:
-        result = attack.attack(oracle, trial.key.n)
+        attack_input = SequentialExecutor(oracle) if implementation == "proof" else oracle
+        result = attack.attack(attack_input, trial.key.n)
         recovered = result[0]
     except Exception as exc:  # every requested attempt must become one row
         exception_class = type(exc).__name__

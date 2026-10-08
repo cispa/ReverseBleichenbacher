@@ -25,7 +25,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from key_policy import load_keys
 from oracle import CountingOracle
-from reversebleichenbacher import ProofAttack
+from reversebleichenbacher import ProofAttack, SequentialExecutor
 from reversebleichenbacher.search import SEARCH_STRATEGIES
 from reporting import reported_outcome, trimmer_missed_power_of_two
 from trials import generate_message, make_trial
@@ -138,7 +138,7 @@ def main() -> None:
                 recovered = None
                 error = ""
                 try:
-                    recovered, _stats = attack.attack(oracle, trial.key.n)
+                    recovered, _stats = attack.attack(SequentialExecutor(oracle), trial.key.n)
                     outcome = "ok"
                 except Exception as exc:
                     outcome = f"{getattr(oracle, '_phase', 'harness')}_failed"

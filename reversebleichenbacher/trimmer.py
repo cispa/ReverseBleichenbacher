@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import math
-from typing import Callable
 
 from .core import AttackConfig, ceil_div
-from .executor import QueryExecutor, as_executor
+from .executor import QueryExecutor
 from .primes import TRIMMER_PRIMES
 
 
@@ -20,12 +19,12 @@ class Trimmer:
         modulus: int,
         B: int,
         config: AttackConfig,
-        oracle: Callable[[int], bool] | QueryExecutor,
+        oracle: QueryExecutor,
     ):
         self.modulus = modulus
         self.B = B
         self.config = config
-        self.oracle = as_executor(oracle)
+        self.oracle = oracle
         self.gen_trimmers_count = 0
         # The oracle is deterministic for a fixed ciphertext. Several
         # overlapping trimmer searches revisit the same multiplier with a

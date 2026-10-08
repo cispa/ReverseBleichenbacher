@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import closing
 from typing import Iterator, Sequence
 
 from .core import ceil_div
@@ -392,12 +393,15 @@ class BottomUpRecovery:
         low: int,
         high: int,
         start_bits: int,
+        batch_bits: int = 1,
         strategy: str = DEFAULT_BOTTOM_UP_STRATEGY,
         r_limit: int = 2048,
         full_setting_limit: int = 7,
     ):
         if start_bits < 2:
             raise ValueError("Bottom-Up start_bits must be at least 2")
+        if batch_bits < 1:
+            raise ValueError("Bottom-Up batch_bits must be positive")
         if strategy not in BOTTOM_UP_STRATEGIES:
             raise ValueError(f"unknown Bottom-Up strategy: {strategy}")
         if r_limit < 1:
@@ -410,6 +414,7 @@ class BottomUpRecovery:
         self.low = low
         self.high = high
         self.start_bits = start_bits
+        self.batch_bits = batch_bits
         self.strategy = strategy
         self.r_limit = r_limit
         self.full_setting_limit = full_setting_limit
@@ -474,18 +479,19 @@ class BottomUpRecovery:
                         yield BottomUpCandidate(multiplier, guess, preimage)
 
                 try:
-                    for reply in execute_candidates(executor, partial_queries()):
-                        certified_queries += 1
-                        if reply.accepted:
-                            preimage = reply.candidate.preimage
-                            assert preimage is not None
-                            self.low = max(
-                                self.low, min(part.low for part in preimage)
-                            )
-                            self.high = min(
-                                self.high, max(part.high for part in preimage)
-                            )
-                            return reply.candidate.guess
+                    with closing(execute_candidates(executor, partial_queries())) as replies:
+                        for reply in replies:
+                            certified_queries += 1
+                            if reply.accepted:
+                                preimage = reply.candidate.preimage
+                                assert preimage is not None
+                                self.low = max(
+                                    self.low, min(part.low for part in preimage)
+                                )
+                                self.high = min(
+                                    self.high, max(part.high for part in preimage)
+                                )
+                                return reply.candidate.guess
                 finally:
                     record_submissions()
 
@@ -511,9 +517,10 @@ class BottomUpRecovery:
                     yield BottomUpCandidate(multiplier, guess)
 
             try:
-                for reply in execute_candidates(executor, full_queries()):
-                    if reply.accepted:
-                        return reply.candidate.guess
+                with closing(execute_candidates(executor, full_queries())) as replies:
+                    for reply in replies:
+                        if reply.accepted:
+                            return reply.candidate.guess
             finally:
                 record_submissions()
 
@@ -554,10 +561,13 @@ class BottomUpRecovery:
 
         while known_bits < target_bits:
             previous_D = 1 << known_bits
-            D = previous_D << 1
+            next_bits = min(known_bits + self.batch_bits, target_bits)
+            D = 1 << next_bits
             known = self._recover_round(
-                executor, D, (known, known + previous_D)
+                executor,
+                D,
+                tuple(known + index * previous_D for index in range(D // previous_D)),
             )
-            known_bits += 1
+            known_bits = next_bits
 
         return (known * self.tau) % (1 << target_bits), self.calls

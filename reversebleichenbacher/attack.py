@@ -50,6 +50,7 @@ class ProofAttack:
         search_full_grid_fallback: bool | None = None,
         bottom_up_strategy: str = DEFAULT_BOTTOM_UP_STRATEGY,
         bottom_up_start_bits: int = 4,
+        bottom_up_batch_bits: int | None = None,
         bottom_up_r_limit: int = 2048,
         bottom_up_full_setting_limit: int | None = None,
     ):
@@ -62,6 +63,8 @@ class ProofAttack:
             raise ValueError(f"unknown Bottom-Up strategy: {bottom_up_strategy}")
         if bottom_up_start_bits < 2:
             raise ValueError("Bottom-Up start_bits must be at least 2")
+        if bottom_up_batch_bits is not None and bottom_up_batch_bits < 1:
+            raise ValueError("Bottom-Up batch_bits must be positive")
         if bottom_up_r_limit < 1:
             raise ValueError("Bottom-Up r limit must be positive")
         if (
@@ -77,6 +80,8 @@ class ProofAttack:
         self._search_full_grid_fallback_override = search_full_grid_fallback
         self.bottom_up_strategy = bottom_up_strategy
         self.bottom_up_start_bits = bottom_up_start_bits
+        self._bottom_up_batch_bits_override = bottom_up_batch_bits
+        self.bottom_up_batch_bits = bottom_up_batch_bits or 1
         self.bottom_up_r_limit = bottom_up_r_limit
         self._bottom_up_full_setting_limit = bottom_up_full_setting_limit
 
@@ -99,12 +104,11 @@ class ProofAttack:
     ) -> None:
         if oracle != config.oracle_type or keylength_ != config.keylength:
             raise ValueError("attack configuration does not match its parameters")
-        if parallel:
-            raise ValueError(
-                "per-attack parallelism is not implemented; parallelize trials"
-            )
         self._config = config
         self.nr_bits = nr_bits
+        self.bottom_up_batch_bits = (
+            self._bottom_up_batch_bits_override or (4 if parallel else 1)
+        )
 
     @property
     def configured_power_two_slack(self) -> int:
@@ -163,7 +167,7 @@ class ProofAttack:
     @property
     def algorithm_config(self) -> dict[str, object]:
         """Return the public parameters needed to reproduce this attack."""
-        return {
+        config = {
             "oracle_type": self._config.oracle_type,
             "t_slack": self._config.t_slack,
             "bs_slack": self._config.bs_slack,
@@ -181,13 +185,16 @@ class ProofAttack:
             "bottom_up_delta_policy": self.bottom_up_delta_policy,
             "bottom_up_query_order": self.bottom_up_query_order,
         }
+        if self.bottom_up_batch_bits != 1:
+            config["bottom_up_batch_bits"] = self.bottom_up_batch_bits
+        return config
 
     def trimming_step(self, executor: QueryExecutor) -> tuple[int, int]:
         trimmer = Trimmer(
             modulus=self._state.n,
             B=self._state.B,
             config=self._config,
-            oracle=executor,
+            executor=executor,
         )
         tau, calls = trimmer.generate_and_test()
         tau, extra_calls = extend_power_of_two(
@@ -262,6 +269,7 @@ class ProofAttack:
                 low=ceil_div(self._state.a, tau),
                 high=self._state.b // tau,
                 start_bits=self.bottom_up_start_bits,
+                batch_bits=self.bottom_up_batch_bits,
                 strategy=self.bottom_up_strategy,
                 r_limit=self.bottom_up_r_limit,
                 full_setting_limit=(

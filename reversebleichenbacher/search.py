@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import closing
 from typing import Iterator
 
 from .core import ceil_div
@@ -276,14 +277,15 @@ def run_search(
     strategy = normalize_search_strategy(strategy)
     started_at = executor.submitted_queries
     queried: set[int] = set()
-    for reply in execute_candidates(
+    with closing(execute_candidates(
         executor,
         search_candidates(strategy, modulus, B, tau, low, high, slack=slack),
-    ):
-        candidate = reply.candidate
-        queried.add(candidate.multiplier)
-        if reply.accepted:
-            return candidate, executor.submitted_queries - started_at
+    )) as replies:
+        for reply in replies:
+            candidate = reply.candidate
+            queried.add(candidate.multiplier)
+            if reply.accepted:
+                return candidate, executor.submitted_queries - started_at
     if strategy == HALVING_SPARSE_ASYMMETRIC and complete_sparse:
         # Sparse scheduling is a query-order heuristic. Complete the exact
         # halving grid before declaring Search exhausted, preserving the
@@ -295,11 +297,12 @@ def run_search(
             )
             if candidate.multiplier not in queried
         )
-        for reply in execute_candidates(executor, remaining):
-            candidate = reply.candidate
-            queried.add(candidate.multiplier)
-            if reply.accepted:
-                return candidate, executor.submitted_queries - started_at
+        with closing(execute_candidates(executor, remaining)) as replies:
+            for reply in replies:
+                candidate = reply.candidate
+                queried.add(candidate.multiplier)
+                if reply.accepted:
+                    return candidate, executor.submitted_queries - started_at
     calls = executor.submitted_queries - started_at
     raise SearchFailure(
         f"{strategy} exhausted interval [{low}, {high}] after {calls} queries"

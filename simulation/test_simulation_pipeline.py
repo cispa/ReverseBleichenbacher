@@ -152,7 +152,7 @@ class BoundaryTests(unittest.TestCase):
         }
         self.assertFalse(
             any(
-                "/latency/attacker/reversebleichenbacher/" in path
+                "/latency/attacker/" in path
                 for path in loaded_paths
             )
         )

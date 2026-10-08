@@ -125,7 +125,7 @@ class PowerOfTwoTests(unittest.TestCase):
             modulus=101,
             B=5,
             config=AttackConfig("FFT", 2048, t_slack=1, bs_slack=3),
-            oracle=SequentialExecutor(oracle),
+            executor=SequentialExecutor(oracle),
         )
         self.assertFalse(trimmer.check_t(10, slack=1))
         self.assertEqual(len(multipliers), 2)

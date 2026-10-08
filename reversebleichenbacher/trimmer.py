@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import math
+from contextlib import closing
+from dataclasses import dataclass
+from typing import Iterable, Iterator
 
 from .core import AttackConfig, ceil_div
-from .executor import QueryExecutor
+from .executor import QueryExecutor, execute_candidates
 from .primes import TRIMMER_PRIMES
 
 
 TRIM_VALUE_THRESHOLD = 20
+
+
+@dataclass(frozen=True)
+class TrimmerCandidate:
+    multiplier: int
+    divisor: int
 
 
 class Trimmer:
@@ -19,12 +28,12 @@ class Trimmer:
         modulus: int,
         B: int,
         config: AttackConfig,
-        oracle: QueryExecutor,
+        executor: QueryExecutor,
     ):
         self.modulus = modulus
         self.B = B
         self.config = config
-        self.oracle = oracle
+        self.executor = executor
         self.gen_trimmers_count = 0
         # The oracle is deterministic for a fixed ciphertext. Several
         # overlapping trimmer searches revisit the same multiplier with a
@@ -35,7 +44,7 @@ class Trimmer:
         """Return ``(response, queried)`` and memoize oracle responses."""
         if multiplier in self._oracle_cache:
             return self._oracle_cache[multiplier], False
-        response = self.oracle.query(multiplier)
+        response = self.executor.query(multiplier)
         self._oracle_cache[multiplier] = response
         return response, True
 
@@ -51,6 +60,18 @@ class Trimmer:
         """Test the center-out candidate multipliers for divisor ``t``."""
         if slack is None:
             slack = self.config.t_slack + 1
+        if self.executor.batch_size > 1:
+            return self._check_t_batched(t, slack)
+        for candidate in self._candidates_for_t(t, slack):
+            response, queried = self._query(candidate.multiplier)
+            self.gen_trimmers_count += int(queried)
+            if response:
+                return True
+        return False
+
+    def _candidates_for_t(
+        self, t: int, slack: int
+    ) -> Iterator[TrimmerCandidate]:
         inverse_t = pow(t, -1, self.modulus)
         lower = self.u_min(t)
         upper = self.u_max(t)
@@ -58,20 +79,65 @@ class Trimmer:
             if t - offset < lower and t + offset > upper:
                 break
             if t - offset >= lower and math.gcd(t - offset, t) == 1:
-                response, queried = self._query(
-                    ((t - offset) * inverse_t) % self.modulus
+                yield TrimmerCandidate(
+                    ((t - offset) * inverse_t) % self.modulus, t
                 )
-                self.gen_trimmers_count += int(queried)
-                if response:
-                    return True
             if t + offset <= upper and math.gcd(t + offset, t) == 1:
-                response, queried = self._query(
-                    ((t + offset) * inverse_t) % self.modulus
+                yield TrimmerCandidate(
+                    ((t + offset) * inverse_t) % self.modulus, t
                 )
-                self.gen_trimmers_count += int(queried)
-                if response:
-                    return True
-        return False
+
+    def _check_t_batched(self, t: int, slack: int) -> bool:
+        pending = []
+        for candidate in self._candidates_for_t(t, slack):
+            cached = self._oracle_cache.get(candidate.multiplier)
+            if cached:
+                return True
+            if cached is None:
+                pending.append(candidate)
+        started = self.executor.submitted_queries
+        try:
+            with closing(execute_candidates(self.executor, pending)) as replies:
+                for reply in replies:
+                    self._oracle_cache[reply.candidate.multiplier] = reply.accepted
+                    if reply.accepted:
+                        return True
+            return False
+        finally:
+            self.gen_trimmers_count += self.executor.submitted_queries - started
+
+    def _parallel_divisors(
+        self, divisors: Iterable[int], tau: int, *, stop_at_cutoff: bool
+    ) -> int:
+        scheduled: set[int] = set()
+
+        def candidates() -> Iterator[TrimmerCandidate]:
+            for divisor in divisors:
+                if tau % divisor == 0:
+                    continue
+                for candidate in self._candidates_for_t(
+                    divisor, self.config.t_slack + 1
+                ):
+                    if (
+                        candidate.multiplier in self._oracle_cache
+                        or candidate.multiplier in scheduled
+                    ):
+                        continue
+                    scheduled.add(candidate.multiplier)
+                    yield candidate
+
+        started = self.executor.submitted_queries
+        try:
+            with closing(execute_candidates(self.executor, candidates())) as replies:
+                for reply in replies:
+                    self._oracle_cache[reply.candidate.multiplier] = reply.accepted
+                    if reply.accepted:
+                        tau = math.lcm(tau, reply.candidate.divisor)
+                        if stop_at_cutoff and tau >= self.config.trimmer_cutoff:
+                            return tau
+            return tau
+        finally:
+            self.gen_trimmers_count += self.executor.submitted_queries - started
 
     def generate_and_test(self) -> tuple[int, int]:
         """Return the accumulated trimmer and its oracle-query count."""
@@ -100,13 +166,26 @@ class Trimmer:
             for prime in TRIMMER_PRIMES
             if sweep_bound <= prime < max_t
         ]
-        for candidate in candidates:
-            if tau >= self.config.trimmer_cutoff and candidate > full_sweep:
-                break
-            if full_sweep and tau % candidate == 0:
-                continue
-            if self.check_t(candidate):
-                tau = math.lcm(tau, candidate)
+        if self.executor.batch_size > 1:
+            tau = self._parallel_divisors(
+                (candidate for candidate in candidates if candidate <= sweep_bound),
+                tau,
+                stop_at_cutoff=False,
+            )
+            if tau < self.config.trimmer_cutoff:
+                tau = self._parallel_divisors(
+                    (candidate for candidate in candidates if candidate > sweep_bound),
+                    tau,
+                    stop_at_cutoff=True,
+                )
+        else:
+            for candidate in candidates:
+                if tau >= self.config.trimmer_cutoff and candidate > full_sweep:
+                    break
+                if full_sweep and tau % candidate == 0:
+                    continue
+                if self.check_t(candidate):
+                    tau = math.lcm(tau, candidate)
 
         # Accumulate higher powers of prime factors already found.
         for prime in [value for value in TRIMMER_PRIMES if value <= tau]:
@@ -168,6 +247,27 @@ class Trimmer:
     ) -> tuple[int, int]:
         if low >= high:
             return (high if find_min else low), calls
+        if self.executor.batch_size > 1 and high - low <= 16:
+            values = tuple(range(low, high + 1))
+            pending = tuple(
+                TrimmerCandidate((value * inverse_tau) % self.modulus, value)
+                for value in values
+                if (value * inverse_tau) % self.modulus not in self._oracle_cache
+            )
+            started = self.executor.submitted_queries
+            with closing(execute_candidates(self.executor, pending)) as replies:
+                for reply in replies:
+                    self._oracle_cache[reply.candidate.multiplier] = reply.accepted
+            calls += self.executor.submitted_queries - started
+            positives = [
+                value
+                for value in values
+                if self._oracle_cache[(value * inverse_tau) % self.modulus]
+            ]
+            return (
+                (min(positives) if find_min else max(positives))
+                if positives else (high if find_min else low)
+            ), calls
         mid = (low + high) // 2 if find_min else ceil_div(low + high, 2)
         response, queried = self._query((mid * inverse_tau) % self.modulus)
         calls += int(queried)

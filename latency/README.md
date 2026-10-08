@@ -5,7 +5,9 @@ Docker lab contains the server, an attacker TLS proxy, and an optional Firefox
 client. `evaluation/eval_runtime.py` tests sequential and batched queries at
 different network delays and records the results as JSON.
 
-The attack code lives in `attacker/reversebleichenbacher/`. On first startup,
+Sequential attacks use the shared `reversebleichenbacher/` package at the
+repository root. The parallel Figure 5 schedule currently lives in
+`attacker/legacy_attack/`; both modes use `attacker/tls_transport.py`. On first startup,
 the attacker container fetches a pinned `tlslite-ng` version and applies the
 patch in `attacker/tlslite-ng-bleichenbacher.patch`.
 

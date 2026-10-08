@@ -6,7 +6,7 @@ from typing import Tuple
 import itertools
 import gmpy2
 
-import reversebleichenbacher.utils as utils
+import legacy_attack.utils as utils
 
 # === helper methods ===
 

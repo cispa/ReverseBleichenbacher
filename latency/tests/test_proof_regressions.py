@@ -1,4 +1,4 @@
-"""Run against either artifact copy by setting PYTHONPATH to its attacker dir."""
+"""Regression tests for the latency attack's existing parallel scheduler."""
 
 import logging
 import sys
@@ -7,10 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-# Until the TLS adapter uses the shared package, exercise its own attack copy.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "attacker"))
 
-from reversebleichenbacher import bottom_up, search, utils
+from legacy_attack import bottom_up, search, utils
 
 
 class PlaintextOracle:

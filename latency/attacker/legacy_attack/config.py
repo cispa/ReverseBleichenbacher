@@ -52,7 +52,7 @@ class BleichenbacherConfig:
         # General configuration.
         self.general = general
 
-import reversebleichenbacher.utils as utils
+import legacy_attack.utils as utils
 
 def get_config_tls(rsa):
     return BleichenbacherConfig(

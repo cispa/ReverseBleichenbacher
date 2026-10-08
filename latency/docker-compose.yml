@@ -25,6 +25,9 @@ services:
       - erlang_network
     volumes:
       - ./attacker:/attacker
+      - ../reversebleichenbacher:/attacker/reversebleichenbacher:ro
+    environment:
+      PYTHONPATH: /attacker
 
   # The victim firefox browser, which is used to browse the vulnerable server, which
   # is running on 127.0.0.1:5800

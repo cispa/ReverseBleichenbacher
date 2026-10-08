@@ -7,10 +7,10 @@ from typing import Tuple, Optional, Dict, Any, Callable
 import logging
 import time
 
-import reversebleichenbacher.trimmer as trimmer
-import reversebleichenbacher.search as search
-import reversebleichenbacher.bottom_up as bottom_up
-import reversebleichenbacher.utils as utils
+import legacy_attack.trimmer as trimmer
+import legacy_attack.search as search
+import legacy_attack.bottom_up as bottom_up
+import legacy_attack.utils as utils
 
 # Setup logging
 level = logging.INFO

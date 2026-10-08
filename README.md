@@ -2,14 +2,15 @@
 
 This repository contains code and experiments related to the paper _"Reverse-Bleichenbacher: Bleichenbacher Attacks Are Practical Again"_ by Youheng Lü, Lorenz Hetterich, Riccardo Zanotto, Cas Cremers, Michael Schwarz, and Lukas Gerlach.
 
-There are two self-contained setups: one for large-scale simulations and one
-for end-to-end TLS latency measurements. The paper's experiments use these
-implementations. The simulation runs with Python;
+There are two experiment setups: one for large-scale simulations and one
+for end-to-end TLS latency measurements. The simulation and sequential TLS
+mode use the shared attack package. The parallel TLS mode currently uses its
+original attack schedule. The simulation runs with Python;
 the TLS lab runs with Docker on macOS or Linux.
 
 | Directory | What is inside |
 | --- | --- |
-| [`reversebleichenbacher/`](reversebleichenbacher/) | The reusable attack package used by the simulations. |
+| [`reversebleichenbacher/`](reversebleichenbacher/) | The reusable attack package used by simulations and sequential TLS attacks. |
 | [`simulation/`](simulation/) | The Capol baseline, simulated oracles, RSA key pools, and scripts for running and analyzing the query experiments. |
 | [`latency/`](latency/) | The TLS attack, Docker lab, network-delay runner, and scripts for the Figure 5 latency experiment. |
 

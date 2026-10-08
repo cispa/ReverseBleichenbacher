@@ -2,9 +2,9 @@
 # This code is based on code copyright Livia Capol, 2021
 #
 
-from reversebleichenbacher.utils import precalculated_primes
+from legacy_attack.utils import precalculated_primes
 import math
-import reversebleichenbacher.utils as utils
+import legacy_attack.utils as utils
 
 # === helper methods ===
 

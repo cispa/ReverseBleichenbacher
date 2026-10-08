@@ -25,7 +25,7 @@ index 658327e..03f6263 100755
  from tlslite.utils.cryptomath import getRandomBytes
  from tlslite.constants import KeyUpdateMessageType
  from tlslite.utils.compression import compression_algo_impls
-+import reversebleichenbacher.bleichenbachertls
++import tls_attack
  
  try:
      from tack.structures.Tack import Tack
@@ -102,7 +102,7 @@ index 658327e..03f6263 100755
 +    
 +    # Create BleichenbacherAttack instance before adding to retList
 +    if bleichenbacher_ip is not None and bleichenbacher_port is not None:
-+        bleichenbacher = reversebleichenbacher.bleichenbachertls.bleichenbacher_attack_tls(bleichenbacher_ip, bleichenbacher_port, quiet=False, benchmark=0, early_abort=False, test_oracle=test_oracle, parallel=parallel)
++        bleichenbacher = tls_attack.bleichenbacher_attack_tls(bleichenbacher_ip, bleichenbacher_port, quiet=False, benchmark=0, early_abort=False, test_oracle=test_oracle, parallel=parallel)
 +    
 +    if "bleichenbacher=" in flagsList:
 +        retList.append(bleichenbacher)
@@ -201,7 +201,7 @@ index 72f6a28..79ccfcc
                      'package1': ['LICENSE', 'README.md']},
 -      install_requires=['ecdsa>=0.18.0b1'],
 +      install_requires=['ecdsa>=0.18.0b1', 'gmpy2>=2.2.1','cryptography==44.0.3', 'pyshark==0.6',
-+'tqdm==4.67.1', 'pycryptodome>=3.22.0', 'reversebleichenbacher'
++'tqdm==4.67.1', 'pycryptodome>=3.22.0'
 +],
        obsoletes=["tlslite"],
        python_requires=">=2.6, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, !=3.4.*, !=3.5.*, !=3.6.*",

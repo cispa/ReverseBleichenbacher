@@ -1,6 +1,6 @@
 from typing import Tuple, Optional
 import gmpy2
-import reversebleichenbacher.utils as utils
+import legacy_attack.utils as utils
 
 # === helper methods ===
 

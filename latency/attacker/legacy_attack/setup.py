@@ -9,10 +9,10 @@
 
 from setuptools import setup, find_packages
 
-package_name = 'reversebleichenbacher'
+package_name = 'legacy_attack'
 
 readme = """
-reversebleichenbacher
+legacy_attack
 ============
 
 Tool to detect and run the Reverse-Bleichenbacher attack.
@@ -27,8 +27,8 @@ setup(
     long_description=readme,
     author="Youheng Lü",
     author_email='mail@ylue.de',
-    package_dir={'reversebleichenbacher': '.'},
-    packages=['reversebleichenbacher'],
+    package_dir={'legacy_attack': '.'},
+    packages=['legacy_attack'],
     scripts=[],
     python_requires='>=3',
     install_requires=[],

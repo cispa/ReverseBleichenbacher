@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+attacker_ip=$(docker inspect --format '{{ range .NetworkSettings.Networks }}{{ .IPAddress }}{{ end }}' attacker) # Meh, but it works ...
+docker exec victim sh -c "echo ${attacker_ip} server >> /etc/hosts"

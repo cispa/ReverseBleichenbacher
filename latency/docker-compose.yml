@@ -1,0 +1,47 @@
+services:
+  # The vulnerable erlang HTTPS server, which is vulnerable to the Bleichenbacher attack
+  # The _ca folder contains the CA certificate and key, which is used to sign the server certificate
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: server
+    networks:
+      - erlang_network
+    volumes:
+      - ./server:/server
+      - ./cert:/cert
+    cap_add:
+      - NET_ADMIN
+
+  # The attacker, which is used to perform the Bleichenbacher attack
+  # The macOS override publishes its TLS port on host loopback for curl.
+  attacker:
+    build:
+      context: .
+      dockerfile: attacker/Dockerfile
+    container_name: attacker
+    networks:
+      - erlang_network
+    volumes:
+      - ./attacker:/attacker
+
+  # The victim firefox browser, which is used to browse the vulnerable server, which
+  # is running on 127.0.0.1:5800
+  # The browser is a one of the newest versions of firefox and should not contain 
+  # any vulnerabilities.
+  victim:
+    image: jlesage/firefox:v25.04.1
+    container_name: victim
+    ports:
+      - "127.0.0.1:5800:5800"
+    networks:
+      - erlang_network
+    volumes:
+      # CA certificates
+      - type: bind
+        source: ./cert/cert9.db
+        target: /config/profile/cert9.db
+
+networks:
+  erlang_network:

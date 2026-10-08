@@ -1,0 +1,15 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Experiment outputs are local. This repository contains the runners, not results.
+simulation/results/
+/experiments/
+latency/analysis/
+latency/evaluation/results_runtime/
+latency/evaluation/smoke_results/
+latency/evaluation/runtime.svg
+latency/attacker/tlslite-ng-bleichenbacher/

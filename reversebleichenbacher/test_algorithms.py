@@ -16,6 +16,7 @@ from .bottom_up import (
     proved_r_bounds,
 )
 from .core import AttackConfig
+from .executor import QueryResult, SequentialExecutor, execute_candidates
 from .primes import TRIMMER_PRIMES
 from .search import (
     HALVING_FULL_GRID,
@@ -24,10 +25,67 @@ from .search import (
     STANDARD_COVERAGE,
     _asymmetric_offsets,
     SearchFailure,
+    SearchCandidate,
     run_search,
     search_candidates,
 )
 from .trimmer import Trimmer, extend_power_of_two, power_two_slack
+
+
+class ExecutorTests(unittest.TestCase):
+    def test_sequential_executor_does_not_prefetch_later_queries(self):
+        events = []
+
+        def oracle(multiplier):
+            events.append(("query", multiplier))
+            return multiplier == 7
+
+        first = SearchCandidate(7, 1, 2, 1, 2, 0, 0)
+        second = SearchCandidate(11, 3, 4, 3, 2, 1, 0)
+
+        def candidates():
+            events.append(("candidate", 7))
+            yield first
+            events.append(("candidate", 11))
+            yield second
+
+        executor = SequentialExecutor(oracle)
+        replies = execute_candidates(executor, candidates())
+        answer = next(replies)
+        self.assertIs(answer.candidate, first)
+        self.assertTrue(answer.accepted)
+        self.assertEqual(executor.submitted_queries, 1)
+        self.assertEqual(events, [("candidate", 7), ("query", 7)])
+        replies.close()
+
+    def test_search_uses_candidate_from_out_of_order_reply(self):
+        first = SearchCandidate(7, 1, 2, 1, 2, 0, 0)
+        second = SearchCandidate(11, 3, 4, 3, 2, 1, 0)
+
+        class BatchedExecutor:
+            batch_size = 2
+            submitted_queries = 0
+
+            def set_phase(self, phase):
+                pass
+
+            def query(self, multiplier):
+                raise AssertionError("Search should use execute_batch")
+
+            def execute_batch(self, candidates):
+                self.submitted_queries += len(candidates)
+                yield QueryResult(candidates[1], True)
+                yield QueryResult(candidates[0], False)
+
+        with mock.patch(
+            "reversebleichenbacher.search.search_candidates",
+            return_value=iter((first, second)),
+        ):
+            chosen, calls = run_search(
+                BatchedExecutor(), STANDARD_COVERAGE, 101, 5, 1, 1, 4
+            )
+        self.assertIs(chosen, second)
+        self.assertEqual(calls, 2)
 
 
 class PowerOfTwoTests(unittest.TestCase):

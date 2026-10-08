@@ -29,7 +29,7 @@ from key_policy import KEY_POLICY, KeyRecord, load_keys, selected_key_index
 from oracle import CountingOracle
 from reporting import reported_outcome, trimmer_missed_power_of_two
 from schema import QUERY_COLUMNS, RESULT_COLUMNS
-from trials import Trial, generate_message
+from trials import Trial, generate_message, make_trial
 from validate_run import (
     ValidationError,
     failure_aware_median,
@@ -209,6 +209,24 @@ class BoundaryTests(unittest.TestCase):
             tuple(inspect.signature(ProofAttack.attack).parameters),
             ("self", "oracle", "modulus"),
         )
+
+    def test_explicit_sequential_executor_matches_callable_oracle(self):
+        from reversebleichenbacher import SequentialExecutor
+
+        trial = make_trial(load_keys(REAL_KEYS, 1024), 20261006, 1024, 0)
+        direct_attack, _ = adapters._proof(1024, "TTT")
+        wrapped_attack, _ = adapters._proof(1024, "TTT")
+        direct_oracle = CountingOracle(trial.plaintext, trial.key.n, 1024, "TTT")
+        wrapped_oracle = CountingOracle(trial.plaintext, trial.key.n, 1024, "TTT")
+        executor = SequentialExecutor(wrapped_oracle)
+
+        direct_result, direct_stats = direct_attack.attack(direct_oracle, trial.key.n)
+        wrapped_result, wrapped_stats = wrapped_attack.attack(executor, trial.key.n)
+
+        self.assertEqual(wrapped_result, direct_result)
+        self.assertEqual(wrapped_stats.total_calls, direct_stats.total_calls)
+        self.assertEqual(wrapped_oracle.counts, direct_oracle.counts)
+        self.assertEqual(executor.submitted_queries, wrapped_oracle.total)
 
     def test_adapter_passes_only_oracle_and_modulus(self):
         calls = []

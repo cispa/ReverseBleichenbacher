@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Callable, Iterator, Sequence
 
 from .core import ceil_div
+from .executor import QueryExecutor, as_executor, execute_candidates
 
 
 PROVED = "proved"
@@ -218,6 +219,13 @@ class ResidueInterval:
         return self.D * self.quotient_high + self.residue
 
 
+@dataclass(frozen=True)
+class BottomUpCandidate:
+    multiplier: int
+    guess: int
+    preimage: tuple[ResidueInterval, ...] | None = None
+
+
 def accepting_preimage(
     *,
     modulus: int,
@@ -413,8 +421,16 @@ class BottomUpRecovery:
         return (-symbolic * self._inverse_tau) % self.modulus
 
     def _recover_round(
-        self, oracle: Callable[[int], bool], D: int, guesses: Sequence[int]
+        self, oracle: Callable[[int], bool] | QueryExecutor, D: int, guesses: Sequence[int]
     ) -> int:
+        executor = as_executor(oracle)
+        observed_queries = executor.submitted_queries
+
+        def record_submissions() -> None:
+            nonlocal observed_queries
+            self.calls += executor.submitted_queries - observed_queries
+            observed_queries = executor.submitted_queries
+
         inverse_D = pow(D, -1, self.modulus)
         h = (D * inverse_D - 1) // self.modulus
         queried: set[int] = set()
@@ -432,38 +448,47 @@ class BottomUpRecovery:
                 r_limit=self.r_limit,
             ):
                 partial_settings += 1
-                for guess in guesses:
-                    k = _k_for_guess(D, setting.r, h, guess)
-                    preimage = certified_preimage(
-                        modulus=self.modulus,
-                        B=self.B,
-                        D=D,
-                        delta=setting.delta,
-                        k=k,
-                        intended=guess,
-                        guesses=guesses,
-                        low=self.low,
-                        high=self.high,
-                        inverse_D=inverse_D,
-                    )
-                    if not preimage:
-                        continue
-                    multiplier = self._multiplier(
-                        setting.delta, k, inverse_D
-                    )
-                    if multiplier in queried:
-                        continue
-                    queried.add(multiplier)
-                    certified_queries += 1
-                    self.calls += 1
-                    if oracle(multiplier):
-                        self.low = max(
-                            self.low, min(part.low for part in preimage)
+
+                def partial_queries() -> Iterator[BottomUpCandidate]:
+                    for guess in guesses:
+                        k = _k_for_guess(D, setting.r, h, guess)
+                        preimage = certified_preimage(
+                            modulus=self.modulus,
+                            B=self.B,
+                            D=D,
+                            delta=setting.delta,
+                            k=k,
+                            intended=guess,
+                            guesses=guesses,
+                            low=self.low,
+                            high=self.high,
+                            inverse_D=inverse_D,
                         )
-                        self.high = min(
-                            self.high, max(part.high for part in preimage)
+                        if not preimage:
+                            continue
+                        multiplier = self._multiplier(
+                            setting.delta, k, inverse_D
                         )
-                        return guess
+                        if multiplier in queried:
+                            continue
+                        queried.add(multiplier)
+                        yield BottomUpCandidate(multiplier, guess, preimage)
+
+                try:
+                    for reply in execute_candidates(executor, partial_queries()):
+                        certified_queries += 1
+                        if reply.accepted:
+                            preimage = reply.candidate.preimage
+                            assert preimage is not None
+                            self.low = max(
+                                self.low, min(part.low for part in preimage)
+                            )
+                            self.high = min(
+                                self.high, max(part.high for part in preimage)
+                            )
+                            return reply.candidate.guess
+                finally:
+                    record_submissions()
 
         for setting in parameter_candidates(
             D,
@@ -476,15 +501,22 @@ class BottomUpRecovery:
             r_limit=self.r_limit,
         ):
             full_settings += 1
-            for guess in guesses:
-                k = _k_for_guess(D, setting.r, h, guess)
-                multiplier = self._multiplier(setting.delta, k, inverse_D)
-                if multiplier in queried:
-                    continue
-                queried.add(multiplier)
-                self.calls += 1
-                if oracle(multiplier):
-                    return guess
+
+            def full_queries() -> Iterator[BottomUpCandidate]:
+                for guess in guesses:
+                    k = _k_for_guess(D, setting.r, h, guess)
+                    multiplier = self._multiplier(setting.delta, k, inverse_D)
+                    if multiplier in queried:
+                        continue
+                    queried.add(multiplier)
+                    yield BottomUpCandidate(multiplier, guess)
+
+            try:
+                for reply in execute_candidates(executor, full_queries()):
+                    if reply.accepted:
+                        return reply.candidate.guess
+            finally:
+                record_submissions()
 
         if self.strategy == PROVED:
             if full_settings == 0:

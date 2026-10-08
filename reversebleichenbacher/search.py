@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Callable, Iterator
 
 from .core import ceil_div
+from .executor import QueryExecutor, as_executor, execute_candidates
 
 
 STANDARD_COVERAGE = "standard_coverage"
@@ -261,7 +262,7 @@ def search_candidates(
 
 
 def run_search(
-    oracle: Callable[[int], bool],
+    oracle: Callable[[int], bool] | QueryExecutor,
     strategy: str,
     modulus: int,
     B: int,
@@ -273,34 +274,34 @@ def run_search(
     complete_sparse: bool = False,
 ) -> tuple[SearchCandidate, int]:
     strategy = normalize_search_strategy(strategy)
-    calls = 0
+    executor = as_executor(oracle)
+    started_at = executor.submitted_queries
     queried: set[int] = set()
-    for candidate in search_candidates(
-        strategy,
-        modulus,
-        B,
-        tau,
-        low,
-        high,
-        slack=slack,
+    for reply in execute_candidates(
+        executor,
+        search_candidates(strategy, modulus, B, tau, low, high, slack=slack),
     ):
+        candidate = reply.candidate
         queried.add(candidate.multiplier)
-        calls += 1
-        if oracle(candidate.multiplier):
-            return candidate, calls
+        if reply.accepted:
+            return candidate, executor.submitted_queries - started_at
     if strategy == HALVING_SPARSE_ASYMMETRIC and complete_sparse:
         # Sparse scheduling is a query-order heuristic. Complete the exact
         # halving grid before declaring Search exhausted, preserving the
         # theorem's odd-quotient coverage even for a perfect oracle.
-        for candidate in search_candidates(
-            HALVING_FULL_GRID, modulus, B, tau, low, high
-        ):
-            if candidate.multiplier in queried:
-                continue
+        remaining = (
+            candidate
+            for candidate in search_candidates(
+                HALVING_FULL_GRID, modulus, B, tau, low, high
+            )
+            if candidate.multiplier not in queried
+        )
+        for reply in execute_candidates(executor, remaining):
+            candidate = reply.candidate
             queried.add(candidate.multiplier)
-            calls += 1
-            if oracle(candidate.multiplier):
-                return candidate, calls
+            if reply.accepted:
+                return candidate, executor.submitted_queries - started_at
+    calls = executor.submitted_queries - started_at
     raise SearchFailure(
         f"{strategy} exhausted interval [{low}, {high}] after {calls} queries"
     )

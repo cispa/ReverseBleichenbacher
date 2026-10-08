@@ -6,6 +6,7 @@ import math
 from typing import Callable
 
 from .core import AttackConfig, ceil_div
+from .executor import QueryExecutor, as_executor
 from .primes import TRIMMER_PRIMES
 
 
@@ -19,12 +20,12 @@ class Trimmer:
         modulus: int,
         B: int,
         config: AttackConfig,
-        oracle: Callable[[int], bool],
+        oracle: Callable[[int], bool] | QueryExecutor,
     ):
         self.modulus = modulus
         self.B = B
         self.config = config
-        self.oracle = oracle
+        self.oracle = as_executor(oracle)
         self.gen_trimmers_count = 0
         # The oracle is deterministic for a fixed ciphertext. Several
         # overlapping trimmer searches revisit the same multiplier with a
@@ -35,7 +36,7 @@ class Trimmer:
         """Return ``(response, queried)`` and memoize oracle responses."""
         if multiplier in self._oracle_cache:
             return self._oracle_cache[multiplier], False
-        response = self.oracle(multiplier)
+        response = self.oracle.query(multiplier)
         self._oracle_cache[multiplier] = response
         return response, True
 

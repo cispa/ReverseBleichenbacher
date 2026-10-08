@@ -26,6 +26,7 @@ from .core import (
     PKCS1Bounds,
     ceil_div,
 )
+from .executor import as_executor
 from .search import (
     DEFAULT_SEARCH_STRATEGY,
     HALVING_SPARSE_ASYMMETRIC,
@@ -235,23 +236,28 @@ class ProofAttack:
         return calls
 
     def attack(self, oracle, modulus: int):
+        executor = as_executor(oracle)
         key_bytes = self._config.keylength // 8
         B = PKCS1Bounds.compute_B(key_bytes)
         lower, upper = PKCS1Bounds.initial_interval(B)
         self.tau_found = 1
         self._state = AttackState(lower, upper, modulus, B)
         self._statistics = AttackStatistics()
+        phase = "init"
 
         try:
-            _phase(oracle, "trimmer")
-            tau, self._statistics.calls_trimmers = self.trimming_step(oracle)
+            phase = "trimmer"
+            _phase(executor, "trimmer")
+            tau, self._statistics.calls_trimmers = self.trimming_step(executor)
 
-            _phase(oracle, "search")
+            phase = "search"
+            _phase(executor, "search")
             self._statistics.calls_improved_step2a = self._execute_search(
-                oracle, tau
+                executor, tau
             )
 
-            _phase(oracle, "bottom_up")
+            phase = "bottom_up"
+            _phase(executor, "bottom_up")
             recovery = BottomUpRecovery(
                 modulus=self._state.n,
                 B=self._state.B,
@@ -267,7 +273,7 @@ class ProofAttack:
             )
             try:
                 recovered, self._statistics.calls_bottom_up = recovery.recover(
-                    oracle, self.nr_bits
+                    executor, self.nr_bits
                 )
             except BottomUpFailure as exc:
                 wrapped = BleichenBacherException(str(exc))
@@ -280,5 +286,5 @@ class ProofAttack:
                 "search": "searching",
                 "bottom_up": "bottom_up",
             }
-            exc.step = phases.get(getattr(oracle, "_phase", ""), "internal_error")
+            exc.step = phases.get(phase, "internal_error")
             raise

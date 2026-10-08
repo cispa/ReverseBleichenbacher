@@ -102,6 +102,21 @@ Use `--min-trimmer 1 --max-trimmer 1` to examine matched messages where the
 simulated trimmer search finds no divisor. `--seed` makes the selected messages
 reproducible; `--count 1 --message-index N` replays one generated message.
 
+To profile the same parallel ciphertext, run:
+
+```sh
+docker exec server tc qdisc replace dev eth0 root netem delay 10ms
+docker exec -w /attacker/tlslite-ng-bleichenbacher attacker \
+  python3 /attacker/profile_parallel.py \
+  --output parallel_profile_10ms.json --cprofile parallel_profile_10ms.prof
+```
+
+The JSON separates phase time, time waiting for query replies, and worker CPU
+and wall time. Worker totals sum over concurrent calls and can exceed attack
+wall time. `--workers` and `--executor process|thread` are diagnostic options;
+the experiment runner continues to use 128 processes. Profile output stays in
+the ignored tlslite-ng checkout.
+
 Full measurements go to `latency/evaluation/results_runtime/`; smoke runs can
 use `latency/evaluation/smoke_results/`. Generated CSVs go to
 `latency/analysis/`. These directories are ignored by Git. The

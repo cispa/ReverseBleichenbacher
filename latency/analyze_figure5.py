@@ -15,6 +15,7 @@ import csv
 import json
 import math
 import statistics
+from functools import partial
 from pathlib import Path
 
 BROWSER_TIMEOUT_SECONDS = 30
@@ -57,15 +58,16 @@ def parse_result_path(path: Path) -> tuple[str, float]:
 
 def successful_measurements(
     path: Path,
+    expected_attempts: int = EXPECTED_ATTEMPTS,
 ) -> tuple[int, list[float]]:
     with path.open(encoding="utf-8") as handle:
         records = json.load(handle)
 
     if not isinstance(records, list):
         raise ValueError(f"{path}: expected a JSON list")
-    if len(records) != EXPECTED_ATTEMPTS:
+    if len(records) != expected_attempts:
         raise ValueError(
-            f"{path}: expected {EXPECTED_ATTEMPTS} attempts, found {len(records)}"
+            f"{path}: expected {expected_attempts} attempts, found {len(records)}"
         )
 
     runtimes = []
@@ -88,15 +90,16 @@ def successful_measurements(
 
 def failure_aware_measurements(
     path: Path,
+    expected_attempts: int = EXPECTED_ATTEMPTS,
 ) -> tuple[int, int, int, list[float]]:
     with path.open(encoding="utf-8") as handle:
         records = json.load(handle)
 
     if not isinstance(records, list):
         raise ValueError(f"{path}: expected a JSON list")
-    if len(records) != EXPECTED_ATTEMPTS:
+    if len(records) != expected_attempts:
         raise ValueError(
-            f"{path}: expected {EXPECTED_ATTEMPTS} attempts, found {len(records)}"
+            f"{path}: expected {expected_attempts} attempts, found {len(records)}"
         )
 
     successful = 0
@@ -118,9 +121,9 @@ def failure_aware_measurements(
             values.append(runtime)
             continue
 
-        # The measurement harness did not clear results.json between attempts.
-        # An exact repeat therefore denotes stale output from a timed-out run,
-        # even when the repeated error text looks like an infrastructure error.
+        # Older measurements could retain results.json after a timeout. An
+        # exact repeat denotes stale output, even if its error text resembles
+        # an infrastructure error. The current runner clears it first.
         stale_stats = (
             index > 0
             and stats is not None
@@ -147,6 +150,8 @@ def quartiles(values: list[float]) -> tuple[float, float, float]:
     median = statistics.median(values)
     if len(values) == 1:
         return median, median, median
+    if len(values) == 2:
+        return min(values), median, max(values)
     q1, _, q3 = statistics.quantiles(values, n=4, method="exclusive")
     return q1, median, q3
 
@@ -174,8 +179,10 @@ def extended_quantile(values: list[float], probability: float) -> float:
     return lower + fraction * (upper - lower)
 
 
-def summarize(path: Path) -> dict[str, float | int]:
-    attempted, runtimes = successful_measurements(path)
+def summarize(
+    path: Path, expected_attempts: int = EXPECTED_ATTEMPTS
+) -> dict[str, float | int]:
+    attempted, runtimes = successful_measurements(path, expected_attempts)
     q1, median, q3 = quartiles(runtimes)
     return {
         "attempted": attempted,
@@ -186,9 +193,11 @@ def summarize(path: Path) -> dict[str, float | int]:
     }
 
 
-def summarize_failure_aware(path: Path) -> dict[str, float | int | None]:
+def summarize_failure_aware(
+    path: Path, expected_attempts: int = EXPECTED_ATTEMPTS
+) -> dict[str, float | int | None]:
     attempted, successful, infrastructure_errors, values = (
-        failure_aware_measurements(path)
+        failure_aware_measurements(path, expected_attempts)
     )
     q1 = extended_quantile(values, 0.25)
     median = extended_quantile(values, 0.5)
@@ -276,11 +285,19 @@ def write_csv(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-dir", type=Path, default=DEFAULT_INPUT_DIR)
+    parser.add_argument(
+        "--expected-attempts",
+        type=int,
+        default=EXPECTED_ATTEMPTS,
+        help="Expected attempts per cell (default: 100)",
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument(
         "--infinity-output", type=Path, default=DEFAULT_INFINITY_OUTPUT
     )
     args = parser.parse_args()
+    if args.expected_attempts < 1:
+        parser.error("--expected-attempts must be positive")
 
     successful_fields = (
         "median_s",
@@ -308,13 +325,22 @@ def main() -> None:
     )
     write_csv(
         args.output,
-        generated_rows(args.input_dir, summarize, successful_fields),
+        generated_rows(
+            args.input_dir,
+            partial(summarize, expected_attempts=args.expected_attempts),
+            successful_fields,
+        ),
         successful_fields,
     )
     write_csv(
         args.infinity_output,
         generated_rows(
-            args.input_dir, summarize_failure_aware, infinity_fields
+            args.input_dir,
+            partial(
+                summarize_failure_aware,
+                expected_attempts=args.expected_attempts,
+            ),
+            infinity_fields,
         ),
         infinity_fields,
     )

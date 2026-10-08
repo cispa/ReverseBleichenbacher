@@ -57,6 +57,52 @@ From the repository root, summarize a complete run with:
 python3 latency/analyze_figure5.py
 ```
 
-Raw measurements go to `latency/evaluation/results_runtime/`; generated CSVs
-go to `latency/analysis/`. Both directories are ignored by Git. The
+For a shorter run, pass the same attempt count to the analyzer. For example,
+this four-delay, three-attempt grid uses the macOS loopback path:
+
+```sh
+python3 latency/evaluation/eval_runtime.py \
+  --modes normal,parallel --delays 0,1,10,30 --count 3 \
+  --host-port 8443 \
+  --output-dir latency/evaluation/smoke_results/figure5-small
+```
+
+Summarize the nonzero-delay cells with:
+
+```sh
+python3 latency/analyze_figure5.py \
+  --input-dir latency/evaluation/smoke_results/figure5-small \
+  --expected-attempts 3 \
+  --output latency/analysis/figure5-small.csv \
+  --infinity-output latency/analysis/figure5-small-failure-aware.csv
+```
+
+The analyzer excludes the zero-delay cell from its CSVs because the paper's
+Figure 5 uses a logarithmic delay axis. Its failure-aware CSV counts attacks
+that do not complete as infinite time to success. In each raw record, `success`
+means the TLS client completed the attack handshake; `stats.result` only
+reports whether the attack algorithm finished. The runner also records curl's
+exit code and timeout state for failed handshakes.
+
+## Compare the query schedules on matched messages
+
+The diagnostic below encrypts known TLS premaster secrets, selects messages
+whose simulated trimmer reaches at least 50, and attacks each ciphertext with
+both schedules against the live TLS oracle. It checks the recovered 46-byte
+suffix exactly. This measures the attack and oracle directly; the Figure 5
+runner above additionally tests the full TLS proxy handshake.
+
+```sh
+docker exec server tc qdisc replace dev eth0 root netem delay 10ms
+docker exec -w /attacker/tlslite-ng-bleichenbacher attacker \
+  python3 /attacker/diagnose_schedules.py --count 2 --min-trimmer 50
+```
+
+Use `--min-trimmer 1 --max-trimmer 1` to examine matched messages where the
+simulated trimmer search finds no divisor. `--seed` makes the selected messages
+reproducible; `--count 1 --message-index N` replays one generated message.
+
+Full measurements go to `latency/evaluation/results_runtime/`; smoke runs can
+use `latency/evaluation/smoke_results/`. Generated CSVs go to
+`latency/analysis/`. These directories are ignored by Git. The
 certificates and private key in `cert/` are lab fixtures.

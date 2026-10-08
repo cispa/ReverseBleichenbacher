@@ -1,9 +1,7 @@
+import json
 import argparse
 import subprocess
 import time
-import json
-import os
-import signal
 from pathlib import Path
 
 EVALUATION_DIR = Path(__file__).resolve().parent
@@ -23,10 +21,6 @@ DELAYS = [
 COUNT = 100
 # output directory for results
 RESULTS_DIR = EVALUATION_DIR / "results_runtime"
-
-# Get rid of delays that always hit the timeout
-DELAYS_NORMAL = [x for x in DELAYS if 1000 * 2 * x < 1000 * TIMEOUT]
-DELAYS_PARALLEL = [x for x in DELAYS if 150 * 2 * x < 1000 * TIMEOUT]
 
 # Path to the json file with statistics created by the bleichenbacher server
 RESULTS_JSON = LATENCY_DIR / "attacker" / "tlslite-ng-bleichenbacher" / "results.json"
@@ -59,7 +53,7 @@ def start_server(parallel):
 def kill_server(process):
     try:
         process.wait(timeout=1)
-    except:
+    except subprocess.TimeoutExpired:
         restart_docker()
     process.wait() # should be dead already
 
@@ -90,6 +84,8 @@ def run_attack(parallel, delay, host_port=None, timeout=TIMEOUT, verbose=False):
 
     success = False
     output = ""
+    timed_out = False
+    curl_returncode = None
 
     try:
         # Docker Desktop cannot route the private container IP from macOS.
@@ -103,7 +99,8 @@ def run_attack(parallel, delay, host_port=None, timeout=TIMEOUT, verbose=False):
             port = host_port
         result = subprocess.run(
             [
-                "curl", "--noproxy", "*", "--cacert", str(LATENCY_DIR / "cert" / "server.crt"),
+                "curl", "--silent", "--show-error", "--noproxy", "*",
+                "--cacert", str(LATENCY_DIR / "cert" / "server.crt"),
                 "--resolve", f"server:{port}:{attacker_ip}", f"https://server:{port}",
                 "-m", str(timeout), "--connect-timeout", str(timeout)
             ],
@@ -112,30 +109,53 @@ def run_attack(parallel, delay, host_port=None, timeout=TIMEOUT, verbose=False):
             stderr=subprocess.STDOUT,
         )
         output = result.stdout.decode("utf-8", errors="replace")
-        # Check if output contains success message
-        success = "Better Bleichenbacher MITM Attack Successful" in output
+        curl_returncode = result.returncode
+        # Require both a completed TLS request and the expected response.
+        success = (
+            result.returncode == 0
+            and "Better Bleichenbacher MITM Attack Successful" in output
+        )
     except subprocess.TimeoutExpired:
-        success = False
+        timed_out = True
     finally:
         # Ensure server is fully killed
         kill_server(server_process)
 
-    # Parse stats from results.json — if it doesn't exist, always report failure
+    # Parse stats from results.json — a successful page also needs a completed
+    # attack record from this attempt.
     stats = None
-    if os.path.exists(RESULTS_JSON):
+    if RESULTS_JSON.exists():
         try:
-            with open(RESULTS_JSON, "r") as f:
-                stats = json.load(f)
+            stats = json.loads(RESULTS_JSON.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, IOError):
-            success = False
-    else:
+            pass
+    if not isinstance(stats, dict) or stats.get("result") != "ok":
         success = False
 
     if verbose and not success:
-        print(f"    curl output: {output[-2000:] or '(no output)'}")
-        print(f"    attack stats: {stats}")
+        print(f"    curl output: {output[-500:] or '(no output)'}")
+        if stats is None:
+            print("    attack stats: unavailable")
+        else:
+            error = str(stats.get("error", ""))
+            print(
+                "    attack stats:",
+                {
+                    "result": stats.get("result"),
+                    "error": error[:200] + ("..." if len(error) > 200 else ""),
+                    "tau": stats.get("tau"),
+                    "total_queries": stats.get("total_queries"),
+                    "runtime": stats.get("runtime"),
+                },
+            )
 
-    return {"success": success, "stats": stats}
+    return {
+        "success": success,
+        "stats": stats,
+        "timed_out": timed_out,
+        "curl_returncode": curl_returncode,
+        "client_output_tail": output[-500:] if not success else "",
+    }
 
 def run_attacks(parallel, delay, samples=COUNT, host_port=None, timeout=TIMEOUT, verbose=False):
     results = list()
@@ -144,8 +164,8 @@ def run_attacks(parallel, delay, samples=COUNT, host_port=None, timeout=TIMEOUT,
         res  = "fail"
         if results[-1]["success"]:
             res = f'{results[-1]["stats"]["runtime"]:5.01f}s'
-        print(f"  Sample {i+1}/{samples}: {res}")
-        if parallel:
+        print(f"  Sample {i+1}/{samples}: {res}", flush=True)
+        if parallel and i + 1 < samples:
             time.sleep(2) # give erlang server a bit of time to calm down
     return results
 

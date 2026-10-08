@@ -11,5 +11,4 @@ simulation/results/
 latency/analysis/
 latency/evaluation/results_runtime/
 latency/evaluation/smoke_results/
-latency/evaluation/runtime.svg
 latency/attacker/tlslite-ng-bleichenbacher/

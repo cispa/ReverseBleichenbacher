@@ -33,12 +33,16 @@ EXECUTE_BLINDING = True
 
 # We only enable TCP fast open if the Linux proc interface exists
 enable_fastopen = False # True # os.path.exists("/proc/sys/net/ipv4/tcp_fastopen")
+ORACLE_SOCKET_TIMEOUT = 10  # seconds; prevent a stalled TLS peer from hanging a query
 
 def global_recv_n(s, amount):
-        data = b""
-        while len(data) < amount:
-            data += s.recv(amount - len(data))
-        return data
+    data = b""
+    while len(data) < amount:
+        chunk = s.recv(amount - len(data))
+        if not chunk:
+            raise ConnectionError("TLS peer closed during record")
+        data += chunk
+    return data
 
 def global_recv_record(s):
     header = global_recv_n(s, 5)
@@ -48,6 +52,7 @@ def global_recv_record(s):
 def global__query(pre_master_secret, message_flow, ip, port, client_hello, server_version, client_key_exchange_prefix):
     global ccs, enc, enable_fastopen, MSG_FASTOPEN
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(ORACLE_SOCKET_TIMEOUT)
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     if not enable_fastopen:
         s.connect((ip, port))
@@ -88,7 +93,7 @@ def global__query(pre_master_secret, message_flow, ip, port, client_hello, serve
         return "ConnectionResetError"
     except socket.timeout:
         return ("Timeout waiting for alert")
-    except:
+    except OSError:
         pass
     finally:
         s.close()
@@ -111,7 +116,6 @@ class TLSOracle:
         self.client_hello = client_hello
         self.client_key_exchange_prefix = client_key_exchange_prefix
         self.workers = 128
-        self.executor = ProcessPoolExecutor(max_workers = self.workers)
         self.server_version = self._find_server_version()
         self.modulus_bits = N.bit_length()
         self.message_flow = False
@@ -124,28 +128,26 @@ class TLSOracle:
 
         # get fast-open cookie
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(ORACLE_SOCKET_TIMEOUT)
         s.connect((ip, port))
         s.close()
+        self.executor = ProcessPoolExecutor(max_workers=self.workers)
 
     def _find_server_version(self):
         # only get server tls version once
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(ORACLE_SOCKET_TIMEOUT)
         try:
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             s.connect((self.ip, self.port))
             s.sendall(self.client_hello)
-            msg = b""
-            while len(msg) < 11:
-                msg += s.recv(11)
+            msg = global_recv_n(s, 11)
             return msg[9:11] # bytes that indicate server version
         finally:
             s.close()
 
     def _recv_n(self, s, amount):
-        data = b""
-        while len(data) < amount:
-            data += s.recv(amount - len(data))
-        return data
+        return global_recv_n(s, amount)
 
     def _recv_record(self, s):
         header = self._recv_n(s, 5)
@@ -157,6 +159,7 @@ class TLSOracle:
         if message_flow is None:
             message_flow = self.message_flow
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(ORACLE_SOCKET_TIMEOUT)
         s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         if not enable_fastopen:
             s.connect((self.ip, self.port))
@@ -195,7 +198,7 @@ class TLSOracle:
             return "ConnectionResetError"
         except socket.timeout:
             return ("Timeout waiting for alert")
-        except:
+        except OSError:
             pass
         finally:
             s.close()
@@ -273,6 +276,7 @@ def get_rsa_from_server(server, port):
         ctx.verify_mode = ssl.CERT_NONE
         ctx.set_ciphers("RSA")
         raw_socket = socket.socket()
+        raw_socket.settimeout(ORACLE_SOCKET_TIMEOUT)
         s = ctx.wrap_socket(raw_socket)
         s.connect((server, port))
         cert_raw = s.getpeercert(binary_form=True)

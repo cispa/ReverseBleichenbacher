@@ -1,6 +1,7 @@
 """Integration checks for the shared attack's parallel TLS schedule."""
 
 from contextlib import closing
+import json
 import unittest
 from unittest import mock
 
@@ -13,7 +14,8 @@ from reversebleichenbacher.search import (
     SearchCandidate,
     run_search,
 )
-from tls_attack import TLSBatchExecutor
+from tls_attack import SharedTLSAttack, TLSBatchExecutor
+from tls_transport import global_recv_n
 
 
 class ReorderedPlaintextExecutor:
@@ -44,6 +46,42 @@ class ReorderedPlaintextExecutor:
 
 
 class SharedParallelTests(unittest.TestCase):
+    def test_tls_setup_failure_is_recorded(self):
+        rsa = mock.Mock(bits=2048, e=65537, N=(1 << 2048) - 159)
+        attack = SharedTLSAttack("server", 443, rsa, b"prefix")
+        with (
+            mock.patch("tls_attack.TLSOracle", side_effect=TimeoutError("setup stalled")),
+            mock.patch("tls_attack.open", mock.mock_open(), create=True) as output,
+        ):
+            with self.assertRaisesRegex(TimeoutError, "setup stalled"):
+                attack.decrypt(123)
+
+        stats = json.loads(
+            "".join(call.args[0] for call in output().write.call_args_list)
+        )
+        self.assertEqual(stats["result"], "init")
+        self.assertEqual(stats["exception_type"], "TimeoutError")
+        self.assertEqual(stats["total_queries"], 0)
+
+    def test_tls_record_read_stops_on_early_close(self):
+        class ClosingSocket:
+            def __init__(self):
+                self.chunks = iter((b"ab", b""))
+
+            def recv(self, _amount):
+                return next(self.chunks)
+
+        with self.assertRaisesRegex(ConnectionError, "closed during record"):
+            global_recv_n(ClosingSocket(), 5)
+
+    def test_premaster_secret_preserves_zeroes_and_internal_version_bytes(self):
+        suffix = b"\x00" + b"\x01" * 20 + b"\x03\x03" + b"\x02" * 23
+        self.assertEqual(len(suffix), 46)
+        self.assertEqual(
+            SharedTLSAttack.premaster_secret(int.from_bytes(suffix, "big")),
+            b"\x03\x03" + suffix,
+        )
+
     def test_full_attack_survives_out_of_order_batch_replies(self):
         modulus, B = 16777219, 65536
         plaintext = 13 * ((5 * B // 26) | 1)

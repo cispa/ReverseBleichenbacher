@@ -1,6 +1,3 @@
-diff --git a/docs/make.bat b/docs/make.bat
-old mode 100644
-new mode 100755
 diff --git a/requirements.txt b/requirements.txt
 index 5d32b92..1a995d1 100644
 --- a/requirements.txt
@@ -9,7 +6,7 @@ index 5d32b92..1a995d1 100644
  ecdsa>=0.18.0b1
 +pycryptodome
 diff --git a/scripts/tls.py b/scripts/tls.py
-index 658327e..03f6263 100755
+index 658327e..ea9e042 100755
 --- a/scripts/tls.py
 +++ b/scripts/tls.py
 @@ -14,6 +14,8 @@ import socket
@@ -186,13 +183,8 @@ index 658327e..03f6263 100755
  
  if __name__ == '__main__':
      if len(sys.argv) < 2:
-diff --git a/scripts/tlsdb.py b/scripts/tlsdb.py
-old mode 100755
-new mode 100644
 diff --git a/setup.py b/setup.py
-old mode 100755
-new mode 100644
-index 72f6a28..79ccfcc
+index 72f6a28..d0704da 100755
 --- a/setup.py
 +++ b/setup.py
 @@ -22,7 +22,9 @@ setup(name="tlslite-ng",
@@ -206,15 +198,6 @@ index 72f6a28..79ccfcc
        obsoletes=["tlslite"],
        python_requires=">=2.6, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, !=3.4.*, !=3.5.*, !=3.6.*",
        classifiers=[
-diff --git a/tests/httpsclient.py b/tests/httpsclient.py
-old mode 100755
-new mode 100644
-diff --git a/tests/httpsserver.sh b/tests/httpsserver.sh
-old mode 100755
-new mode 100644
-diff --git a/tests/tlstest.py b/tests/tlstest.py
-old mode 100755
-new mode 100644
 diff --git a/tlslite/constants.py b/tlslite/constants.py
 index 3395c4b..8cca020 100644
 --- a/tlslite/constants.py
@@ -269,14 +252,14 @@ index 3395c4b..8cca020 100644
      #: AES-256 CBC ciphers
      aes256Suites = []
 diff --git a/tlslite/keyexchange.py b/tlslite/keyexchange.py
-index 5bade6f..37edb08 100644
+index 5bade6f..6a57a59 100644
 --- a/tlslite/keyexchange.py
 +++ b/tlslite/keyexchange.py
 @@ -5,6 +5,7 @@
  """Handling of cryptographic operations for key exchange"""
  
  import ecdsa
-+from Crypto.Util.number import long_to_bytes, bytes_to_long
++from Crypto.Util.number import bytes_to_long
  from .mathtls import goodGroupParameters, makeK, makeU, makeX, \
          paramStrength, RFC7919_GROUPS, calc_key
  from .errors import TLSInsufficientSecurity, TLSUnknownPSKIdentity, \
@@ -319,7 +302,7 @@ index 5bade6f..37edb08 100644
          self.encPremasterSecret = None
  
      def makeServerKeyExchange(self, sigHash=None):
-@@ -528,8 +535,27 @@ class RSAKeyExchange(KeyExchange):
+@@ -528,8 +535,18 @@ class RSAKeyExchange(KeyExchange):
  
      def processClientKeyExchange(self, clientKeyExchange):
          """Decrypt client key exchange, return premaster secret"""
@@ -332,20 +315,11 @@ index 5bade6f..37edb08 100644
 +                clientKeyExchange.encryptedPreMasterSecret)
 +        else:
 +            c = bytes_to_long(clientKeyExchange.encryptedPreMasterSecret)
-+            # decrypt the message using the bleichenbacher object
-+            
 +            try:
-+                m = self.bleichenbacher.decrypt(c)
-+                msg = long_to_bytes(m)
-+                print(msg)
-+                premasterSecret = bytearray(b'\x03\x03' + msg.split(b'\x03\x03')[-1])
-+                print("N=", self.bleichenbacher.rsa.N)
-+                print("e=", self.bleichenbacher.rsa.e)
-+                print("encryptedPreMasterSecret: ", clientKeyExchange.encryptedPreMasterSecret.hex())
-+                print("premasterSecret: ", premasterSecret.hex())
-+            except:
-+                raise TLSAlert(AlertDescription.handshake_failure)
-+                premasterSecret = None
++                recovered_suffix = self.bleichenbacher.decrypt(c)
++                premasterSecret = self.bleichenbacher.premaster_secret(recovered_suffix)
++            except Exception as error:
++                raise TLSAlert(AlertDescription.handshake_failure) from error
  
          # On decryption failure randomize premaster secret to avoid
          # Bleichenbacher's "million message" attack

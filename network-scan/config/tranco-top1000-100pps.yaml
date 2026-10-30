@@ -1,0 +1,54 @@
+compose:
+  file: docker-compose-pipeline.yml
+  project_name: net-scan
+  network-subnet: 172.31.250.0/24
+
+network:
+  enabled: false
+
+redis:
+  host: localhost
+  port: 6380
+
+results:
+  directory: results
+
+zmap:
+  scan-port: 443
+  scan-rate: 10000
+  bandwidth: null
+  log-interval: 30
+
+zgrab2:
+  scan-port: 443
+  senders: 25
+  connect-timeout: 4s
+  target-timeout: 10s
+  max-retries: 2
+  log-level: INFO
+
+job-manager:
+  zgrab:
+    batch-size: 1000
+    batch-timeout-seconds: 10
+  scanners:
+    batch-size: 100
+    batch-timeout-seconds: 5
+  max-queue-backlog: 2
+  safety:
+    max-targets-per-second: 100
+    max-dispatch-burst: 100
+    input-target-dedupe-ttl-seconds: 86400
+    scanner-ip-cooldown-seconds: 0
+    scanner-retries-enabled: false
+
+bleichenbacher-scanners:
+  robot-python:
+    enabled: true
+    concurrency: 70
+    timeout: 35
+
+  robot-sslyze:
+    enabled: true
+    concurrency: 40
+    timeout: 15

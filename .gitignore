@@ -12,3 +12,11 @@ latency/analysis/
 latency/evaluation/results_runtime/
 latency/evaluation/smoke_results/
 latency/attacker/tlslite-ng-bleichenbacher/
+
+# Client retry experiment outputs and generated local certificate authority.
+client-retry/*.jsonl
+client-retry/ca.pem
+client-retry/ca-key.pem
+
+# Network scan outputs.
+network-scan/results/

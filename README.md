@@ -2,16 +2,19 @@
 
 This repository contains code and experiments related to the paper _"Reverse-Bleichenbacher: Bleichenbacher Attacks Are Practical Again"_ by Youheng Lü, Lorenz Hetterich, Riccardo Zanotto, Cas Cremers, Michael Schwarz, and Lukas Gerlach.
 
-There are two experiment setups: one for large-scale simulations and one
-for end-to-end TLS latency measurements. Both use the shared attack package;
+The repository includes the attack implementation, its simulation and latency
+experiments, and the standalone artifacts used to measure client retries and
+scan the Tranco Top 1M. The attack experiments use the shared attack package;
 the TLS adapter submits sequential or parallel query batches. The simulation
-runs with Python; the TLS lab runs with Docker on macOS or Linux.
+runs with Python; the TLS lab and network scan use Docker on macOS or Linux.
 
 | Directory | What is inside |
 | --- | --- |
 | [`reversebleichenbacher/`](reversebleichenbacher/) | The reusable attack package used by simulations and both TLS modes. |
 | [`simulation/`](simulation/) | The Capol baseline, simulated oracles, RSA key pools, and scripts for running and analyzing the query experiments. |
 | [`latency/`](latency/) | The TLS attack, Docker lab, network-delay runner, and scripts for the Figure 5 latency experiment. |
+| [`client-retry/`](client-retry/) | The TLS test server and Selenium driver used to measure client retry behavior. |
+| [`network-scan/`](network-scan/) | The Docker Compose pipeline used for the Tranco ROBOT/Bleichenbacher scan. |
 
 Each setup can be run on its own. See the README in each directory for the full
 set of options.
@@ -46,6 +49,34 @@ and cleanup commands.
 
 Experiment results are generated locally under ignored output directories.
 The keys and certificates included here are synthetic lab fixtures.
+
+## Run the client retry experiment
+
+Install the dependencies and start the standalone test server:
+
+```sh
+cd client-retry
+python3 -m pip install scapy cryptography selenium
+python3 server.py --domain lvh.me --fail-mode reset
+```
+
+See [`client-retry/README.md`](client-retry/README.md) for certificate trust
+setup, the Selenium runner, and the available failure modes.
+
+## Run the network scan
+
+The scan is an active Internet measurement. Review the target list, rate, and
+network configuration before starting it. From `network-scan/`, run:
+
+```sh
+python3 -m pip install -r requirements.txt
+./scan.py reset
+./scan.py start
+./scan.py inject domains.txt
+```
+
+See [`network-scan/README.md`](network-scan/README.md) for the complete workflow
+and configuration options.
 
 ## Demo with curl
 Start the vulnerable server and attacker containers:

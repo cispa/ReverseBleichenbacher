@@ -1,0 +1,136 @@
+services:
+  # Redis message queue
+  redis:
+    image: redis:7-alpine
+    container_name: scan-redis
+    command: redis-server --appendonly no
+    ports:
+      - "${REDIS_HOST_PORT:-6380}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+  
+  redis-insight:
+    image: redis/redisinsight:latest
+    restart: unless-stopped
+    container_name: scan-redis-insight
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - RI_REDIS_HOST=redis
+      - RI_REDIS_PORT=6379
+      - RI_REDIS_ALIAS=NetScanRedis
+    ports:
+      - "5540:5540"
+
+  # ZMap Scanner - Scan network ranges and push to input-targets queue
+  zmap-scanner:
+    build: ./services/zmap-scanner
+    container_name: scan-zmap
+    depends_on:
+      redis:
+        condition: service_healthy
+    network_mode: host
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      - REDIS_HOST=${ZMAP_REDIS_HOST:-localhost}:${REDIS_HOST_PORT:-6380}
+      - OUTPUT_QUEUE=input-targets
+      - TARGET_RANGE=${TARGET_RANGE:-}
+      - SCAN_PORT=${SCAN_PORT:-443}
+      - SCAN_RATE=${SCAN_RATE:-10000}
+      - BANDWIDTH=${BANDWIDTH:-}
+      - RESULTS_FILE=/results/zmap-hits.csv
+      - LOG_INTERVAL=${LOG_INTERVAL:-30}
+    volumes:
+      - ./results/logs:/results
+    profiles:
+      - manual
+
+  # ZGrab2 Worker - Stateless TLS scanner (receives requests, returns results)
+  zgrab2-worker:
+    build: ./services/zgrab2-worker
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      default:   # For Redis communication
+    environment:
+      - REDIS_HOST=redis:6379
+      - REQUEST_QUEUE=zgrab2-requests
+      - RESULTS_QUEUE=zgrab2-results
+      - SCAN_PORT=443
+      - RESULTS_FILE=/results/zgrab2-raw.jsonl
+      - CONNECT_TIMEOUT=${ZGRAB2_CONNECT_TIMEOUT:-5s}
+      - TARGET_TIMEOUT=${ZGRAB2_TARGET_TIMEOUT:-30s}
+      - LOG_LEVEL=${ZGRAB2_LOG_LEVEL:-info}
+    volumes:
+      - ./results/logs:/results
+
+  # Job Manager - Central pipeline scheduler
+  job-manager:
+    build: ./services/job-manager
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_HOST=redis:6379
+      - INPUT_QUEUE=input-targets
+      - ZGRAB2_REQUEST_QUEUE=zgrab2-requests
+      - ZGRAB2_RESULTS_QUEUE=zgrab2-results
+      - SCANNER_QUEUES=${SCANNER_QUEUES:-robot-python:robot-python-batches,robot-sslyze:robot-sslyze-batches}
+      - ZGRAB_BATCH_SIZE=${ZGRAB_BATCH_SIZE:-100}
+      - ZGRAB_BATCH_TIMEOUT_SECONDS=${ZGRAB_BATCH_TIMEOUT_SECONDS:-10}
+      - SCANNER_BATCH_SIZE=${SCANNER_BATCH_SIZE:-100}
+      - SCANNER_BATCH_TIMEOUT_SECONDS=${SCANNER_BATCH_TIMEOUT_SECONDS:-10}
+      - MAX_QUEUE_BACKLOG=${MAX_QUEUE_BACKLOG:-1}
+      - ZGRAB2_MAX_RETRIES=${ZGRAB2_MAX_RETRIES:-3}
+      - BATCH_LOG_FILE=/results/logs/rsa-batches.jsonl
+      - ZGRAB_LOG_FILE=/results/logs/zgrab2-latest.jsonl
+      - RESULTS_QUEUE=robot-results
+      - RESULTS_FILE=/results/scanners/robot-all.jsonl
+      - VULNERABLE_FILE=/results/vulnerable.txt
+    volumes:
+      - ./results:/results
+
+  # Stage 3a: ROBOT Scanner Workers (Python robot-detect)
+  robot-scanner-python:
+    build: ./services/robot-scanner-python
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      default:   # For Redis communication
+    environment:
+      - REDIS_HOST=redis:6379
+      - BATCH_QUEUE=robot-python-batches
+      - CONCURRENCY=${ROBOT_PYTHON_CONCURRENCY:-5}
+      - RESULTS_FILE=/results/robot-python.jsonl
+      - RESULTS_QUEUE=robot-results
+      - TIMEOUT=${ROBOT_PYTHON_TIMEOUT:-10}
+      - ROBOT_PYTHON_MODE=${ROBOT_PYTHON_MODE:-standard}
+      - SCAN_PORT=443
+    volumes:
+      - ./results/scanners:/results
+
+  # Stage 3b: ROBOT Scanner Workers (SSLyze implementation)
+  robot-scanner-sslyze:
+    build: ./services/robot-scanner-sslyze
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      default:   # For Redis communication
+    environment:
+      - REDIS_HOST=redis:6379
+      - BATCH_QUEUE=robot-sslyze-batches
+      - RESULTS_FILE=/results/robot-sslyze.jsonl
+      - RESULTS_QUEUE=robot-results
+      - CONCURRENCY=${ROBOT_SSLYZE_CONCURRENCY:-4}
+      - TIMEOUT=${ROBOT_SSLYZE_TIMEOUT:-10}
+    volumes:
+      - ./results/scanners:/results

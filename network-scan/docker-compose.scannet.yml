@@ -1,0 +1,27 @@
+# Override file for dedicated scan network interface (macvlan)
+# Used when network.enabled: true in config
+# Include with: docker compose -f docker-compose-pipeline.yml -f docker-compose.scannet.yml
+
+networks:
+  scannet:
+    driver: macvlan
+    driver_opts:
+      parent: ${SCAN_INTERFACE}
+    ipam:
+      config:
+        - subnet: ${SCAN_SUBNET}
+          gateway: ${SCAN_GATEWAY}
+          ip_range: ${SCAN_IP_RANGE}
+
+services:
+  zgrab2-worker:
+    networks:
+      scannet:
+
+  robot-scanner-python:
+    networks:
+      scannet:
+
+  robot-scanner-sslyze:
+    networks:
+      scannet:

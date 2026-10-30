@@ -1,0 +1,56 @@
+# ROBOT Scanner Pipeline Configuration
+
+compose:
+  file: docker-compose-pipeline.yml     # Docker Compose file to use
+  project_name: net-scan                # Docker project name
+
+# Network configuration for scanner containers
+# When enabled, scanners use a dedicated network interface via Docker macvlan
+# Set values to "auto" or omit them to auto-detect from the default route
+# network:
+#   enabled: true                       # Set to true to use dedicated scan interface
+#   scan-interface: enp3s0              # Physical interface (auto-detected if omitted)
+#   scan-subnet: 192.168.10.0/24        # Subnet (auto-detected if omitted)
+#   scan-gateway: 192.168.10.1          # Gateway (auto-detected if omitted)
+#   scan-ip-range: 192.168.10.200/28    # Container IP range (auto-detected if omitted)
+
+redis:
+  host: localhost                       # Redis host for inject/reset commands from host machine
+  port: 6380                            # Redis port exposed on host machine
+
+results:
+  directory: results                    # Directory where all JSONL result files are written
+
+zmap:
+  scan-port: 443                        # Port to scan (HTTPS/TLS)
+  scan-rate: 10000                      # Packets per second (adjust based on available bandwidth)
+  bandwidth: null                       # Bandwidth limit e.g., "10M", "1G", or null for unlimited
+  log-interval: 30                      # Log progress every N seconds
+
+zgrab2:
+  scan-port: 443                        # Port to connect to for TLS handshake
+  connect-timeout: 4s                   # TCP connection timeout
+  target-timeout: 10s                   # Total timeout per host including TLS handshake
+  max-retries: 2                        # Number of retry attempts for temporarily unavailable hosts
+  log-level: INFO                       # Log level for zgrab2 (e.g., debug, info, warn, error)
+
+job-manager:
+  zgrab:
+    batch-size: 1000                      # Number of IPs/domains per zgrab2 request
+    batch-timeout-seconds: 10            # Max seconds to wait for a zgrab2 batch to fill
+  scanners:
+    batch-size: 100                      # Number of RSA hosts per scanner batch push
+    batch-timeout-seconds: 5            # Future use: max seconds to wait before flushing partial scanner batches
+  max-queue-backlog: 2                  # Max batches per scanner queue (0=unlimited, 1=synchronized, 1+=allow frontrunning on N elements)
+
+bleichenbacher-scanners:
+  robot-python:                         # Original robot-detect from robotattack.org
+    enabled: true                       # Enable/disable this scanner
+    mode: standard                      # standard|fast (fast uses robot-detect-fast.py)
+    concurrency: 70                     # Number of parallel workers
+    timeout: 35                         # Timeout in seconds per host
+
+  robot-sslyze:                         # SSLyze-based implementation
+    enabled: true                       # Enable/disable this scanner
+    concurrency: 40                     # Number of parallel workers
+    timeout: 30                         # Timeout in seconds per host
